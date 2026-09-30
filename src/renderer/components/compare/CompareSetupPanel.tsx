@@ -1,5 +1,5 @@
 import { confirmUnsavedChanges, isDiffTabDirty } from '../../utils/unsaved-changes'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { ArrowLeftRight, FolderOpen, History, Play } from 'lucide-react'
 import type { StrategyName } from '../../../../shared/types'
@@ -8,6 +8,8 @@ import { useAppStore } from '../../stores/app-store'
 import { useSettingsStore } from '../../stores/settings-store'
 import { useUIStore } from '../../stores/ui-store'
 import { useCompareActions } from '../../hooks/useCompare'
+import { useCompareSetupShortcut } from '../../hooks/useCompareSetupShortcut'
+import { isSubmitKey } from '../../utils/submit-key'
 import { isFilterAdditionOnly } from '../../utils/filter-change'
 import { getRuntimeInfo } from '../../runtime/runtime-info'
 import SourceSelector from '../SourceSelector'
@@ -44,6 +46,9 @@ function describeMissingInput(leftPath: string, rightPath: string, strategyCount
  */
 export default function CompareSetupPanel({ variant = 'page', onSubmitted }: CompareSetupPanelProps) {
   const [strategyDocOpen, setStrategyDocOpen] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
+  const panelRef = useRef<HTMLDivElement>(null)
   const runtime = getRuntimeInfo()
   const openOverlay = useUIStore((s) => s.openOverlay)
   const globalPathFilters = useSettingsStore((s) => s.globalPathFilters)
@@ -137,24 +142,39 @@ export default function CompareSetupPanel({ variant = 'page', onSubmitted }: Com
   }
 
   const missingInput = describeMissingInput(leftPath, rightPath, strategies.length)
-  const submitDisabled = loading || missingInput !== null
+  const submitDisabled = submitting || loading || missingInput !== null
 
   const handleSubmit = async () => {
-    if (submitDisabled) return
-    if (variant === 'dialog' && useAppStore.getState().diffTabs.some(isDiffTabDirty)) {
-      if (!await confirmUnsavedChanges()) return
-      useAppStore.getState().clearDiffTabs()
+    const state = useCompareStore.getState()
+    if (submittingRef.current || state.scanning || state.comparing
+      || describeMissingInput(state.leftPath, state.rightPath, state.strategies.length)) return
+
+    submittingRef.current = true
+    setSubmitting(true)
+    try {
+      if (variant === 'dialog' && useAppStore.getState().diffTabs.some(isDiffTabDirty)) {
+        const sessionId = useAppStore.getState().activeCompareTabId
+        if (!await confirmUnsavedChanges() || !panelRef.current
+          || sessionId !== useAppStore.getState().activeCompareTabId) return
+        useAppStore.getState().clearDiffTabs()
+      }
+      const pending = runCompare(variant === 'dialog' ? { reuseActiveSession: true } : undefined)
+      onSubmitted?.()
+      await pending
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
     }
-    void runCompare(variant === 'dialog' ? { reuseActiveSession: true } : undefined)
-    onSubmitted?.()
   }
+
+  useCompareSetupShortcut(panelRef, handleSubmit)
 
   const submitLabel = variant === 'dialog' ? '应用并重新对比' : '开始对比'
   const submitHint = missingInput ?? '按 Enter 直接开始'
   const showFirstRun = variant === 'page' && compareTabCount === 0 && !leftPath && !rightPath
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-3 p-4">
+    <div ref={panelRef} className="mx-auto flex max-w-3xl flex-col gap-3 p-4">
       {showFirstRun && (
         <EmptyState
           variant="first-run"
@@ -249,6 +269,9 @@ export default function CompareSetupPanel({ variant = 'page', onSubmitted }: Com
           disabled={submitDisabled}
           aria-describedby="compare-setup-hint"
           onClick={handleSubmit}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !isSubmitKey(event.nativeEvent)) event.preventDefault()
+          }}
         >
           {submitLabel}
         </Button>

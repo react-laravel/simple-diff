@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { CirclePlus, Server } from 'lucide-react'
 import type { SSHConfig, SSHConfigInput } from '../../../../shared/types'
-import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Panel, Skeleton } from '../ui'
+import { Badge, Button, ConfirmDialog, EmptyState, Panel, Skeleton } from '../ui'
+import ManagementSurface from '../ManagementSurface'
 import SSHConfigForm from '../SSHConfigForm'
 import { useSSHStore } from '../../stores/ssh-store'
 import { showToast } from '../../stores/toast-store'
@@ -10,6 +11,7 @@ import { showToast } from '../../stores/toast-store'
 export interface SSHManagerDialogProps {
   readonly open: boolean
   readonly onOpenChange: (open: boolean) => void
+  readonly variant?: 'dialog' | 'page'
 }
 
 interface TestResult {
@@ -25,7 +27,8 @@ interface TestResult {
  *
  * `SSHConfigForm` 原样复用，只有外层容器换成了共享原语。
  */
-export default function SSHManagerDialog({ open, onOpenChange }: SSHManagerDialogProps) {
+// 顶栏页签与数据源旁的上下文对话框复用同一份配置和操作。
+export default function SSHManagerDialog({ open, onOpenChange, variant = 'dialog' }: SSHManagerDialogProps) {
   const { configs, loading, loadConfigs } = useSSHStore(useShallow((state) => ({
     configs: state.configs,
     loading: state.loading,
@@ -95,7 +98,8 @@ export default function SSHManagerDialog({ open, onOpenChange }: SSHManagerDialo
 
   return (
     <>
-      <Dialog
+      <ManagementSurface
+        variant={variant}
         open={open}
         onOpenChange={onOpenChange}
         title="SSH 连接管理"
@@ -114,7 +118,7 @@ export default function SSHManagerDialog({ open, onOpenChange }: SSHManagerDialo
                 新建连接
               </Button>
             ) : null}
-            <Button variant="secondary" onClick={() => onOpenChange(false)}>关闭</Button>
+            {variant === 'dialog' ? <Button variant="secondary" onClick={() => onOpenChange(false)}>关闭</Button> : null}
           </>
         }
       >
@@ -214,7 +218,7 @@ export default function SSHManagerDialog({ open, onOpenChange }: SSHManagerDialo
             ))}
           </ul>
         </div>
-      </Dialog>
+      </ManagementSurface>
 
       <ConfirmDialog
         open={pendingDelete !== null}

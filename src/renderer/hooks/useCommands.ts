@@ -40,7 +40,8 @@ import { useSettingsStore } from '../stores/settings-store'
 import { useSSHStore } from '../stores/ssh-store'
 import { useUIStore } from '../stores/ui-store'
 import { getRuntimeInfo } from '../runtime/runtime-info'
-import { openCompareTab, persistActiveCompareTab, startNewCompareSession } from '../utils/compare-session-navigation'
+import { openCompareTab, startNewCompareSession } from '../utils/compare-session-navigation'
+import { navigateToPage } from '../utils/app-navigation'
 import { formatCompareTabTitleFromSources } from '../utils/source-label'
 import {
   canQueueCompareSync,
@@ -197,7 +198,7 @@ export function useCommands({ enabled = true }: UseCommandsOptions = {}): Comman
         perform: () => {
           if (page === 'compare') return
           // `openCompareTab()` 自己会 setPage；有活动标签就是结果态，没有就是 setup 态。
-          openCompareTab()
+          navigateToPage('compare')
         },
       },
       {
@@ -210,8 +211,7 @@ export function useCommands({ enabled = true }: UseCommandsOptions = {}): Comman
         perform: () => {
           if (page === 'text') return
           // 与顶栏模式切换同一条路径：离开工作区前把 live 会话写回它的标签。
-          persistActiveCompareTab()
-          useAppStore.getState().setPage('text')
+          navigateToPage('text')
         },
       },
     )
@@ -558,10 +558,10 @@ export function useCommands({ enabled = true }: UseCommandsOptions = {}): Comman
       commands.push({
         id: 'settings-ssh',
         title: 'SSH 连接管理…',
-        group: 'settings',
+        group: 'navigate',
         icon: Server,
         keywords: 'ssh sftp 管理 连接 服务器',
-        perform: () => openOverlay('ssh'),
+        perform: () => navigateToPage('ssh'),
       })
     }
 
@@ -569,10 +569,10 @@ export function useCommands({ enabled = true }: UseCommandsOptions = {}): Comman
       commands.push({
         id: 'settings-history',
         title: '对比历史…',
-        group: 'settings',
+        group: 'navigate',
         icon: History,
         keywords: 'history 历史 记录 归档',
-        perform: () => openOverlay('history'),
+        perform: () => navigateToPage('history'),
       })
     }
 

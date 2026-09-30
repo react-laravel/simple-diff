@@ -11,7 +11,7 @@ import { useLogStore } from '../stores/log-store'
 import { useDiffPaletteSync, useThemeSync } from '../hooks/useThemeSync'
 import { useGlobalShortcuts } from '../hooks/useGlobalShortcuts'
 import { SHORTCUT } from '../hooks/shortcuts'
-import { openCompareTab, persistActiveCompareTab } from '../utils/compare-session-navigation'
+import { isPageAvailable, navigateToPage } from '../utils/app-navigation'
 import { getRuntimeInfo } from '../runtime/runtime-info'
 import { isTauriRuntime } from '../runtime/ensure-app-api'
 import type { ThemePreference } from '../stores/settings-store'
@@ -20,9 +20,12 @@ interface AppShellProps {
   readonly children: ReactNode
 }
 
+// SSH 管理和对比历史也有独立页签；原有上下文对话框继续复用同一份内容。
 const MODE_TABS: readonly TabItem[] = [
   { value: 'compare', label: '目录对比', icon: Folder },
   { value: 'text', label: '文本对比', icon: Text },
+  { value: 'ssh', label: 'SSH 管理', icon: Server },
+  { value: 'history', label: '对比历史', icon: History },
 ]
 
 /** F10：三态偏好完整保留，`system` 不再会被顶栏按钮意外抹掉。 */
@@ -45,29 +48,27 @@ export default function AppShell({ children }: AppShellProps) {
   // macOS window controls share the 36px mode bar instead of adding a title row.
   const nativeTitlebar = isTauriRuntime() && typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
   const page = useAppStore((s) => s.page)
-  const setPage = useAppStore((s) => s.setPage)
   const openOverlay = useUIStore((s) => s.openOverlay)
   const toggleLog = useLogStore((s) => s.toggleVisible)
   const { theme, setTheme } = useThemeSync()
   useDiffPaletteSync()
   const mode = pageToMode(page)
+  const modeTabs = MODE_TABS.filter((tab) => isPageAvailable(tab.value as AppMode))
 
   const handleModeChange = useCallback((next: string) => {
     const nextMode = next as AppMode
     if (nextMode === mode) return
 
-    if (nextMode === 'text') {
-      // F4：模式切换不销毁任何东西，但要把 live 会话写回它自己的标签，
-      // 这样在文本模式里读快照的地方（App 的本地监听目标、状态栏）看到的是最新值。
-      persistActiveCompareTab()
-      setPage('text')
-      return
-    }
-
+    // F4：模式切换不销毁任何东西，但要把 live 会话写回它自己的标签，
+    // 这样在文本模式里读快照的地方（App 的本地监听目标、状态栏）看到的是最新值。
     // “目录对比”只有一个含义：显示对比工作区。有结果就是结果态，没有就是 setup 态
     // ——两者是同一个屏幕的两种状态。旧的 `Layout.tsx:74-79` 会在两种含义间摇摆。
-    openCompareTab()
-  }, [mode, setPage])
+    navigateToPage(nextMode)
+  }, [mode])
+
+  useEffect(() => {
+    if (!isPageAvailable(page)) navigateToPage('compare')
+  }, [page, runtime.supportsSftp, runtime.supportsHistory])
 
   const appMenuItems = useMemo<MenuItem[]>(() => {
     const items: MenuItem[] = [
@@ -75,10 +76,10 @@ export default function AppShell({ children }: AppShellProps) {
     ]
 
     if (runtime.supportsHistory) {
-      items.push({ id: 'history', label: '对比历史…', icon: History, onSelect: () => openOverlay('history') })
+      items.push({ id: 'history', label: '对比历史…', icon: History, onSelect: () => navigateToPage('history') })
     }
     if (runtime.supportsSftp) {
-      items.push({ id: 'ssh', label: 'SSH 连接管理…', icon: Server, onSelect: () => openOverlay('ssh') })
+      items.push({ id: 'ssh', label: 'SSH 连接管理…', icon: Server, onSelect: () => navigateToPage('ssh') })
     }
     if (runtime.supportsSync) {
       items.push({ id: 'sync', label: '同步任务…', icon: FolderSync, onSelect: () => openOverlay('sync') })
@@ -125,8 +126,10 @@ export default function AppShell({ children }: AppShellProps) {
           size="sm"
           value={mode}
           onValueChange={handleModeChange}
-          items={[...MODE_TABS]}
-          className="self-stretch border-b-0"
+          items={modeTabs.map((tab) => ({
+            ...tab, id: `app-tab-${tab.value}`, controls: `app-panel-${tab.value}`,
+          }))}
+          className="min-w-0 self-stretch overflow-x-auto border-b-0"
         />
         <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
         <div className="flex items-center gap-1">
@@ -146,7 +149,14 @@ export default function AppShell({ children }: AppShellProps) {
         </div>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
+      <main className="min-h-0 flex-1 overflow-hidden">
+        {modeTabs.map((tab) => (
+          <div key={tab.value} id={`app-panel-${tab.value}`} role="tabpanel"
+            aria-labelledby={`app-tab-${tab.value}`} tabIndex={0} hidden={tab.value !== mode} className="h-full">
+            {tab.value === mode ? children : null}
+          </div>
+        ))}
+      </main>
 
       <LogPanel />
       <Statusbar />

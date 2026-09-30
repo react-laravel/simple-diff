@@ -110,7 +110,7 @@ describe('useCommands — 非损失性', () => {
       'settings-strategy-doc',
       'settings-shortcuts',
     ]) {
-      expect(byId(id).group).toBe('settings')
+      expect(byId(id).group).toBe(id === 'settings-ssh' || id === 'settings-history' ? 'navigate' : 'settings')
     }
   })
 

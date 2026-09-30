@@ -2,6 +2,9 @@ import { useWindowCloseGuard } from './hooks/useWindowCloseGuard'
 import AppShell from './components/AppShell'
 import ComparePage from './pages/ComparePage'
 import TextComparePage from './pages/TextComparePage'
+import SSHManagerDialog from './components/overlays/SSHManagerDialog'
+import HistoryDialog from './components/overlays/HistoryDialog'
+import { isPageAvailable, navigateToPage } from './utils/app-navigation'
 import { useAppStore } from './stores/app-store'
 import { useEffect, useMemo, useRef } from 'react'
 import { useShallow } from 'zustand/react/shallow'
@@ -101,7 +104,7 @@ export default function App() {
     setActiveCompareTab(targetCompareTab.id)
 
     // 模式现在会被持久化：上次停在“文本对比”就留在文本对比，不要把用户拽回来。
-    if (appState.page !== 'text') {
+    if (!isPageAvailable(appState.page)) {
       setPage('compare')
     }
   }, [replaceDiffTabs, setActiveCompareTab, setPage])
@@ -228,6 +231,8 @@ export default function App() {
     <AppShell>
       {page === 'compare' && <ComparePage />}
       {page === 'text' && <TextComparePage />}
+      {page === 'ssh' && <SSHManagerDialog open variant="page" onOpenChange={() => navigateToPage('compare')} />}
+      {page === 'history' && <HistoryDialog open variant="page" onOpenChange={() => navigateToPage('compare')} />}
     </AppShell>
   )
 }

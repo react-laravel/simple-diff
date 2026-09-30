@@ -11,7 +11,8 @@ import { sanitizePersistedCompareSessionSnapshot, type CompareSessionSnapshot } 
  * chunk 5 起 `'home'` 也不再是页面：“尚无结果”是对比工作区自己的 setup 态，
  * 由 `hasCompareSessionContent()` 推导，没有新增持久化字段。
  */
-export type Page = 'compare' | 'text'
+// 当前顶栏同时提供 SSH 管理和对比历史，旧的上下文弹窗入口仍然保留。
+export type Page = 'compare' | 'text' | 'ssh' | 'history'
 
 /** 顶栏模式切换与 `Page` 一一对应。 */
 export type AppMode = Page
@@ -83,7 +84,7 @@ interface PersistedAppState {
   readonly activeCompareTabId: string | null
 }
 
-const VALID_PAGES: readonly Page[] = ['compare', 'text']
+const VALID_PAGES: readonly Page[] = ['compare', 'text', 'ssh', 'history']
 
 /**
  * v1 从未持久化 `page`，且旧版联合类型还包含 home/ssh/history/sync/settings。

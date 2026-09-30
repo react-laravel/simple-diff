@@ -6,7 +6,6 @@ import {
   Button,
   ConfirmDialog,
   DataTable,
-  Dialog,
   EmptyState,
   IconButton,
   Skeleton,
@@ -16,10 +15,12 @@ import {
 } from '../ui'
 import { useOpenHistoryPair } from '../../hooks/useOpenHistoryPair'
 import { truncatePath } from '../../utils/tree-utils'
+import ManagementSurface from '../ManagementSurface'
 
 export interface HistoryDialogProps {
   readonly open: boolean
   readonly onOpenChange: (open: boolean) => void
+  readonly variant?: 'dialog' | 'page'
 }
 
 function extractSavedSftpLabel(savedLabel: string, configId: string): string | null {
@@ -100,7 +101,8 @@ type PendingDeletion =
  *    旧代码只写了六个 store 字段然后 `setPage('home')`，用户要在另一块界面再按一次。
  * 3. 删除 / 清空走 `ConfirmDialog`，不再是点了就没。
  */
-export default function HistoryDialog({ open, onOpenChange }: HistoryDialogProps) {
+// 历史现在也可从顶栏直接打开；首次使用时的上下文入口继续使用对话框。
+export default function HistoryDialog({ open, onOpenChange, variant = 'dialog' }: HistoryDialogProps) {
   const [entries, setEntries] = useState<readonly CompareHistoryEntry[]>([])
   const [sshConfigs, setSSHConfigs] = useState<readonly SSHConfig[]>([])
   const [pairFilter, setPairFilter] = useState('all')
@@ -284,7 +286,8 @@ export default function HistoryDialog({ open, onOpenChange }: HistoryDialogProps
 
   return (
     <>
-      <Dialog
+      <ManagementSurface
+        variant={variant}
         open={open}
         onOpenChange={onOpenChange}
         title="对比历史"
@@ -301,7 +304,7 @@ export default function HistoryDialog({ open, onOpenChange }: HistoryDialogProps
                 清空历史
               </Button>
             ) : null}
-            <Button variant="secondary" onClick={() => onOpenChange(false)}>关闭</Button>
+            {variant === 'dialog' ? <Button variant="secondary" onClick={() => onOpenChange(false)}>关闭</Button> : null}
           </>
         }
       >
@@ -350,7 +353,7 @@ export default function HistoryDialog({ open, onOpenChange }: HistoryDialogProps
             </>
           ) : null}
         </div>
-      </Dialog>
+      </ManagementSurface>
 
       <ConfirmDialog
         open={pendingDeletion !== null}

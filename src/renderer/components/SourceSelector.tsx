@@ -10,6 +10,7 @@ import SFTPBrowserDialog from './overlays/SFTPBrowserDialog'
 import { cn } from '../lib/utils'
 import { Folder, Server } from 'lucide-react'
 import { findFolderDropTarget, getDroppedFolderPath } from '../utils/folder-drop'
+import { isSubmitKey } from '../utils/submit-key'
 
 type SourceType = 'local' | 'sftp'
 
@@ -232,7 +233,7 @@ export default function SourceSelector({
           value={path}
           onChange={(event) => onPathChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+            if (!onSubmit || !isSubmitKey(event.nativeEvent)) return
             event.preventDefault()
             onSubmit?.()
           }}

@@ -8,6 +8,8 @@ import type { MenuItem } from './types'
 
 export interface TabItem {
   value: string
+  id?: string
+  controls?: string
   label: React.ReactNode
   icon?: LucideIcon
   badge?: React.ReactNode
@@ -87,6 +89,8 @@ export function Tabs({
             }}
             type="button"
             role="tab"
+            id={item.id}
+            aria-controls={item.controls}
             aria-selected={selected}
             disabled={item.disabled}
             tabIndex={index === focusIndex ? 0 : -1}

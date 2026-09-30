@@ -19,7 +19,7 @@ afterEach(() => {
 })
 
 describe('浏览器预览冒烟', () => {
-  it('mock api 就位后 App 可以渲染出两种模式与应用菜单', async () => {
+  it('mock api 就位后 App 可以渲染四个页签与应用菜单', async () => {
     const api = await ensureAppApi()
     expect(api.runtime.mode).toBe('web')
 
@@ -29,7 +29,8 @@ describe('浏览器预览冒烟', () => {
     // 顶层导航从 7 个槽位收敛到 2 个模式（设计蓝图 §2.1）
     expect(screen.getAllByText('目录对比').length).toBeGreaterThan(0)
     expect(screen.getByText('文本对比')).toBeDefined()
-    expect(screen.queryByText('SSH管理')).toBeNull()
+    expect(screen.getByRole('tab', { name: 'SSH 管理' })).toBeDefined()
+    expect(screen.getByRole('tab', { name: '对比历史' })).toBeDefined()
 
     // SFTP / 历史 / 同步能力位为 true，对应入口降级到 `⋯` 应用菜单里
     await user.click(screen.getByRole('button', { name: '应用菜单' }))

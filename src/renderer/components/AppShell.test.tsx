@@ -43,11 +43,11 @@ afterEach(() => {
 })
 
 describe('AppShell 顶栏', () => {
-  it('只暴露两种模式，不再有 7 个导航槽位', () => {
+  it('直接暴露目录、文本、SSH 管理和历史四个页签', () => {
     render(<AppShell>内容</AppShell>)
 
     const tabs = screen.getAllByRole('tab')
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['目录对比', '文本对比'])
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['目录对比', '文本对比', 'SSH 管理', '对比历史'])
   })
 
   it('切到文本对比只改 page，不销毁对比会话', async () => {
