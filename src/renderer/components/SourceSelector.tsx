@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
+import type { DirectoryDragDropEvent } from '../../../shared/app-api'
 import type { SSHConfig } from '../../../shared/types'
 import { useSSHStore } from '../stores/ssh-store'
 import { useUIStore } from '../stores/ui-store'
@@ -8,6 +9,7 @@ import { Button, Input, Select, ToggleGroup, type ToggleGroupOption } from './ui
 import SFTPBrowserDialog from './overlays/SFTPBrowserDialog'
 import { cn } from '../lib/utils'
 import { Folder, Server } from 'lucide-react'
+import { findFolderDropTarget, getDroppedFolderPath } from '../utils/folder-drop'
 
 type SourceType = 'local' | 'sftp'
 
@@ -23,44 +25,18 @@ interface SourceSelectorProps {
   readonly onSubmit?: () => void
 }
 
-function getDroppedFolderPath(event: React.DragEvent<HTMLDivElement>): string | null {
-  // Tauri native drop fills getPathForFile via onDragDropEvent; HTML5 File has no path.
-  const files = event.dataTransfer.files
-  if (files.length > 0) {
-    const filePath = window.api.getPathForFile(files[0])
-    if (filePath) return filePath
+function applyLocalFolderPath(
+  path: string,
+  sourceType: SourceType,
+  onSourceTypeChange: (type: SourceType) => void,
+  onSSHConfigIdChange: (id: string) => void,
+  onPathChange: (path: string) => void,
+): void {
+  if (sourceType !== 'local') {
+    onSourceTypeChange('local')
+    onSSHConfigIdChange('')
   }
-
-  const uriList = event.dataTransfer.getData('text/uri-list')
-  if (uriList) {
-    const uri = uriList
-      .split('\n')
-      .map((line) => line.trim())
-      .find((line) => line && !line.startsWith('#'))
-
-    if (uri?.startsWith('file://')) {
-      try {
-        return decodeURIComponent(new URL(uri).pathname)
-      } catch {
-        // Ignore malformed URI payloads and continue with other fallbacks.
-      }
-    }
-  }
-
-  const plainText = event.dataTransfer.getData('text/plain').trim()
-  if (plainText) {
-    if (plainText.startsWith('file://')) {
-      try {
-        return decodeURIComponent(new URL(plainText).pathname)
-      } catch {
-        return plainText
-      }
-    }
-
-    return plainText
-  }
-
-  return null
+  onPathChange(path)
 }
 
 /**
@@ -91,6 +67,7 @@ export default function SourceSelector({
   const [isDragOver, setIsDragOver] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   const dragDepthRef = useRef(0)
+  const dropTargetRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     loadConfigs()
@@ -110,6 +87,37 @@ export default function SourceSelector({
     setBrowserOpen(false)
   }, [sourceType, sshConfigId])
 
+  useEffect(() => {
+    if (typeof window.api.onDirectoryDragDrop !== 'function') return
+
+    const handleNativeDrop = (event: DirectoryDragDropEvent) => {
+      const target = dropTargetRef.current
+      if (!target) return
+      if (event.type === 'leave') {
+        setIsDragOver(false)
+        return
+      }
+
+      const hit = findFolderDropTarget({ x: event.x, y: event.y }) === target
+      if (event.type === 'over') {
+        setIsDragOver(hit)
+        return
+      }
+
+      setIsDragOver(false)
+      if (!hit || event.paths.length === 0) return
+      applyLocalFolderPath(
+        event.paths[0],
+        sourceType,
+        onSourceTypeChange,
+        onSSHConfigIdChange,
+        onPathChange,
+      )
+    }
+
+    return window.api.onDirectoryDragDrop(handleNativeDrop)
+  }, [onPathChange, onSSHConfigIdChange, onSourceTypeChange, sourceType])
+
   const handleBrowseLocal = async () => {
     const result = await window.api.selectFolder()
     if (result.success && result.data) {
@@ -118,20 +126,17 @@ export default function SourceSelector({
   }
 
   const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
-    if (sourceType !== 'local') return
     event.preventDefault()
     dragDepthRef.current += 1
     setIsDragOver(true)
   }
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (sourceType !== 'local') return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
   }
 
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
-    if (sourceType !== 'local') return
     event.preventDefault()
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
     if (dragDepthRef.current === 0) {
@@ -140,14 +145,21 @@ export default function SourceSelector({
   }
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    if (sourceType !== 'local') return
     event.preventDefault()
     dragDepthRef.current = 0
     setIsDragOver(false)
+    // Tauri 的 Finder 拖放由 onDirectoryDragDrop 负责；HTML5 File 没有真实路径。
+    if (runtime.supportsDirectoryDragDrop) return
 
-    const droppedPath = getDroppedFolderPath(event)
+    const droppedPath = getDroppedFolderPath(event, (file) => window.api.getPathForFile(file))
     if (droppedPath) {
-      onPathChange(droppedPath)
+      applyLocalFolderPath(
+        droppedPath,
+        sourceType,
+        onSourceTypeChange,
+        onSSHConfigIdChange,
+        onPathChange,
+      )
     }
   }
 
@@ -168,6 +180,8 @@ export default function SourceSelector({
     <div className="flex flex-col gap-1.5">
       <label className="text-xs font-medium tracking-wider text-fg-muted uppercase">{label}</label>
       <div
+        ref={dropTargetRef}
+        data-folder-drop=""
         className={cn(
           'flex flex-wrap items-center gap-2 rounded-md p-0.5 transition-colors',
           isDragOver && 'bg-accent-quiet ring-2 ring-dashed ring-accent/40',
@@ -239,7 +253,7 @@ export default function SourceSelector({
         )}
       </div>
 
-      {isDragOver && sourceType === 'local' ? (
+      {isDragOver ? (
         <p className="text-xs text-fg-muted">松开以使用拖入的目录路径。</p>
       ) : null}
 

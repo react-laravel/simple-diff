@@ -7,6 +7,8 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { applyDirtyPathsToSnapshot, sanitizePersistedCompareSessionSnapshot, useCompareStore } from './stores/compare-store'
 import { bindCompareEvents } from './utils/compare-events'
+import { applyOpenedLocalPaths } from './utils/open-paths'
+import { findFolderDropTarget } from './utils/folder-drop'
 import { refreshSyncedDirtyRoots, rememberSyncDirtyRoots, useCompareActions } from './hooks/useCompare'
 import { shouldShowSyncTaskInCompare } from './utils/sync-task-visibility'
 import { getSyncRecompareRootsFromItems } from './utils/sync-dirty'
@@ -208,21 +210,16 @@ export default function App() {
   useEffect(() => {
     if (typeof window.api.onOpenPaths !== 'function') return
     return window.api.onOpenPaths((paths) => {
-      if (paths.length === 0) return
-      const compareState = useCompareStore.getState()
-      compareState.setLeftSourceType('local')
-      compareState.setLeftSSHConfigId('')
-      compareState.setLeftPath(paths[0])
+      applyOpenedLocalPaths(paths, { setPage, runCompare })
+    })
+  }, [runCompare, setPage])
 
-      if (paths.length >= 2) {
-        compareState.setRightSourceType('local')
-        compareState.setRightSSHConfigId('')
-        compareState.setRightPath(paths[1])
-        void runCompare()
-      } else {
-        // 只拿到一个路径：留在对比工作区的 setup 态，让用户补另一侧。
-        setPage('compare')
-      }
+  useEffect(() => {
+    if (typeof window.api.onDirectoryDragDrop !== 'function') return
+    return window.api.onDirectoryDragDrop((event) => {
+      if (event.type !== 'drop' || event.paths.length === 0) return
+      if (findFolderDropTarget({ x: event.x, y: event.y })) return
+      applyOpenedLocalPaths(event.paths, { setPage, runCompare })
     })
   }, [runCompare, setPage])
 

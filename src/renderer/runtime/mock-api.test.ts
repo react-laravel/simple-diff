@@ -18,7 +18,7 @@ const APP_API_MEMBERS: readonly (keyof AppAPI)[] = [
   'onEntryUpdate', 'onCompareLocalDirty', 'onSyncProgress', 'onLog', 'writeLog',
   'textDiff', 'listSSHConfigs', 'saveSSHConfig', 'deleteSSHConfig', 'testSSHConnection',
   'browseSSH', 'listHistory', 'clearHistory', 'deleteHistory', 'showInFolder',
-  'renameFile', 'deleteFile', 'selectFolder', 'selectFile', 'onOpenPaths', 'getPathForFile',
+  'renameFile', 'deleteFile', 'selectFolder', 'selectFile', 'onOpenPaths', 'onDirectoryDragDrop', 'getPathForFile',
 ]
 
 function compareRequest(compareId: string) {
@@ -358,5 +358,6 @@ describe('mock 未使用的订阅通道', () => {
     expect(source.type).toBe('local')
     expect(() => api.onCompareLocalDirty(() => {})()).not.toThrow()
     expect(() => api.onOpenPaths(() => {})()).not.toThrow()
+    expect(() => api.onDirectoryDragDrop(() => {})()).not.toThrow()
   })
 })

@@ -2,6 +2,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
+
+use crate::open_paths::OpenPathQueue;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -240,6 +242,11 @@ pub async fn select_file(app: AppHandle) -> Result<IpcResult<Option<String>>, St
   .map_err(|err| format!("选择文件失败: {err}"))?;
 
   Ok(IpcResult::ok(path))
+}
+
+#[tauri::command]
+pub fn take_open_paths(queue: State<'_, OpenPathQueue>) -> IpcResult<Vec<String>> {
+  IpcResult::ok(queue.take_and_mark_ready())
 }
 
 #[tauri::command]

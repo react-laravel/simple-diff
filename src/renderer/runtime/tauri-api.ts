@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import type { AppAPI } from '@shared/app-api'
+import type { AppAPI, DirectoryDragDropEvent } from '@shared/app-api'
 import { computeTextDiffAsync } from './text-diff-client'
 import type {
   CompareEntry,
@@ -59,6 +59,7 @@ function subscribe<T>(
 
 /** Last native drop paths (Tauri onDragDropEvent); HTML5 File has no path in WKWebView. */
 let lastNativeDropPaths: string[] = []
+const directoryDragDropListeners = new Set<(event: DirectoryDragDropEvent) => void>()
 
 function rememberNativeDropPaths(paths: readonly string[]): void {
   lastNativeDropPaths = [...paths]
@@ -67,6 +68,12 @@ function rememberNativeDropPaths(paths: readonly string[]): void {
 export function consumeNativeDropPath(): string | null {
   if (lastNativeDropPaths.length === 0) return null
   return lastNativeDropPaths.shift() ?? null
+}
+
+function emitDirectoryDragDrop(event: DirectoryDragDropEvent): void {
+  for (const listener of directoryDragDropListeners) {
+    listener(event)
+  }
 }
 
 function ensureNativeDropListener(): void {
@@ -79,8 +86,28 @@ function ensureNativeDropListener(): void {
   try {
     void getCurrentWebview()
       .onDragDropEvent((event) => {
+        if (event.payload.type === 'leave') {
+          emitDirectoryDragDrop({ type: 'leave' })
+          return
+        }
+
+        if (event.payload.type === 'enter' || event.payload.type === 'over') {
+          emitDirectoryDragDrop({
+            type: 'over',
+            x: event.payload.position.x,
+            y: event.payload.position.y,
+          })
+          return
+        }
+
         if (event.payload.type === 'drop') {
           rememberNativeDropPaths(event.payload.paths)
+          emitDirectoryDragDrop({
+            type: 'drop',
+            x: event.payload.position.x,
+            y: event.payload.position.y,
+            paths: event.payload.paths,
+          })
         }
       })
       .catch(() => {
@@ -223,10 +250,31 @@ export const tauriApi: AppAPI = {
   selectFile: () =>
     wrap(() => invoke<IpcResult<string | null>>('select_file')),
 
-  onOpenPaths: (callback) =>
-    subscribe<readonly string[]>('app:open-paths', (paths) => {
+  onOpenPaths: (callback) => {
+    // `take_open_paths` resolves asynchronously: a subscriber that unsubscribes
+    // before it settles must not receive the startup paths afterwards.
+    let disposed = false
+    const unsubscribe = subscribe<readonly string[]>('app:open-paths', (paths) => {
       callback(paths)
-    }),
+    })
+    void wrap(() => invoke<IpcResult<readonly string[]>>('take_open_paths')).then((result) => {
+      if (disposed) return
+      if (result.success && result.data && result.data.length > 0) {
+        callback(result.data)
+      }
+    })
+    return () => {
+      disposed = true
+      unsubscribe()
+    }
+  },
+
+  onDirectoryDragDrop: (callback) => {
+    directoryDragDropListeners.add(callback)
+    return () => {
+      directoryDragDropListeners.delete(callback)
+    }
+  },
 
   getPathForFile: () => consumeNativeDropPath() ?? '',
 }

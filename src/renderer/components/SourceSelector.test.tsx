@@ -5,8 +5,12 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import SourceSelector from './SourceSelector'
 import { useSSHStore } from '../stores/ssh-store'
+import type { DirectoryDragDropEvent } from '../../../shared/app-api'
+
+let nativeDropHandler: ((event: DirectoryDragDropEvent) => void) | undefined
 
 function installApiMock() {
+  nativeDropHandler = undefined
   const api = {
     listSSHConfigs: vi.fn(async () => ({
       success: true,
@@ -50,6 +54,12 @@ function installApiMock() {
     }),
     selectFolder: vi.fn(async () => ({ success: true, data: '/tmp' })),
     getPathForFile: vi.fn(() => '/tmp'),
+    onDirectoryDragDrop: vi.fn((callback) => {
+      nativeDropHandler = callback
+      return () => {
+        nativeDropHandler = undefined
+      }
+    }),
   } as unknown as Window['api']
 
   window.api = api
@@ -106,5 +116,84 @@ describe('SourceSelector sftp browsing', () => {
     await user.click(screen.getByRole('button', { name: '选择当前目录' }))
 
     expect(handlePathChange).toHaveBeenLastCalledWith('/var')
+  })
+
+  it('applies a native directory drop when the cursor is over the selector', async () => {
+    const handlePathChange = vi.fn()
+    const handleSourceTypeChange = vi.fn()
+    const handleSSHConfigIdChange = vi.fn()
+
+    const { container } = render(
+      <SourceSelector
+        label="左侧"
+        sourceType="sftp"
+        path="/"
+        sshConfigId="dogeow"
+        onSourceTypeChange={handleSourceTypeChange}
+        onPathChange={handlePathChange}
+        onSSHConfigIdChange={handleSSHConfigIdChange}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(nativeDropHandler).toBeTypeOf('function')
+    })
+
+    const target = container.querySelector('[data-folder-drop]')
+    expect(target).toBeTruthy()
+    vi.spyOn(target as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 240,
+      bottom: 40,
+      width: 240,
+      height: 40,
+      toJSON() {},
+    })
+
+    nativeDropHandler?.({ type: 'drop', x: 20, y: 16, paths: ['/Users/sam/src'] })
+
+    expect(handleSourceTypeChange).toHaveBeenCalledWith('local')
+    expect(handleSSHConfigIdChange).toHaveBeenCalledWith('')
+    expect(handlePathChange).toHaveBeenCalledWith('/Users/sam/src')
+  })
+
+  it('ignores native drops that miss the selector', async () => {
+    const handlePathChange = vi.fn()
+
+    const { container } = render(
+      <SourceSelector
+        label="左侧"
+        sourceType="local"
+        path=""
+        sshConfigId=""
+        onSourceTypeChange={vi.fn()}
+        onPathChange={handlePathChange}
+        onSSHConfigIdChange={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(nativeDropHandler).toBeTypeOf('function')
+    })
+
+    const target = container.querySelector('[data-folder-drop]')
+    vi.spyOn(target as HTMLElement, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 240,
+      bottom: 40,
+      width: 240,
+      height: 40,
+      toJSON() {},
+    })
+
+    nativeDropHandler?.({ type: 'drop', x: 400, y: 400, paths: ['/Users/sam/src'] })
+
+    expect(handlePathChange).not.toHaveBeenCalled()
   })
 })

@@ -185,6 +185,7 @@ export function createMockApi(): AppAPI {
     selectFile: () => ok<string | null>(MOCK_PRIVATE_KEY_PATH),
 
     onOpenPaths: (callback) => openPathsEmitter.subscribe(callback),
+    onDirectoryDragDrop: () => () => {},
 
     // 浏览器里的 File 没有真实路径；SourceSelector 会退回 text/uri-list 与 text/plain
     getPathForFile: () => '',

@@ -6,6 +6,7 @@ mod compare;
 mod files;
 mod history;
 mod log_bridge;
+mod open_paths;
 mod path_guards;
 mod path_utils;
 mod secret_crypto;
@@ -19,15 +20,13 @@ mod sync_plan;
 mod types;
 mod watch;
 
+use open_paths::OpenPathQueue;
 use state::AppState;
-use tauri::{Emitter, Manager, RunEvent};
+use tauri::{Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  let open_paths: Vec<String> = std::env::args()
-    .skip(1)
-    .filter(|arg| !arg.starts_with('-'))
-    .collect();
+  let initial_open_paths = open_paths::collect_open_path_args(std::env::args());
 
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
@@ -35,7 +34,7 @@ pub fn run() {
     .plugin(tauri_plugin_process::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .manage(AppState::new())
-    .setup(|app| {
+    .setup(move |app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()
@@ -45,7 +44,7 @@ pub fn run() {
       }
       crate::sync::sync_manager().hydrate_from_disk(app.handle());
       let _ = crate::secret_crypto::app_data_dir(app.handle());
-      app.manage(open_paths);
+      app.manage(OpenPathQueue::new(initial_open_paths));
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -59,6 +58,7 @@ pub fn run() {
       commands::stop_local_compare_watch,
       commands::select_folder,
       commands::select_file,
+      commands::take_open_paths,
       commands::show_in_folder,
       commands::rename_path,
       commands::delete_path,
@@ -79,13 +79,20 @@ pub fn run() {
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
-    .run(|app_handle, event| {
-      if let RunEvent::Ready = event {
-        if let Some(paths) = app_handle.try_state::<Vec<String>>() {
-          if !paths.is_empty() {
-            let _ = app_handle.emit("app:open-paths", paths.inner().clone());
-          }
-        }
+    .run(|app_handle, event| match event {
+      #[cfg(any(target_os = "macos", target_os = "ios"))]
+      RunEvent::Opened { urls } => {
+        let Some(queue) = app_handle.try_state::<OpenPathQueue>() else {
+          return;
+        };
+        let paths: Vec<String> = urls
+          .iter()
+          .filter_map(|url| url.to_file_path().ok())
+          .map(open_paths::normalize_dropped_path)
+          .filter(|path| !path.is_empty())
+          .collect();
+        queue.enqueue(app_handle, paths);
       }
+      _ => {}
     });
 }

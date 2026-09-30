@@ -71,7 +71,14 @@ export interface AppAPI {
   selectFolder: () => Promise<IpcResult<string | null>>
   selectFile: () => Promise<IpcResult<string | null>>
   onOpenPaths: (callback: (paths: readonly string[]) => void) => (() => void)
+  onDirectoryDragDrop: (callback: (event: DirectoryDragDropEvent) => void) => (() => void)
   onWindowCloseRequested?: (callback: () => Promise<boolean>) => (() => void)
 
   getPathForFile: (file: File) => string
 }
+
+export type DirectoryDragDropEvent =
+  | { readonly type: 'over'; readonly x: number; readonly y: number }
+  | { readonly type: 'leave' }
+  | { readonly type: 'drop'; readonly x: number; readonly y: number; readonly paths: readonly string[] }
+

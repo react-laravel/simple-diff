@@ -12,6 +12,7 @@ commands.allow = [
   "stop_local_compare_watch",
   "select_folder",
   "select_file",
+  "take_open_paths",
   "show_in_folder",
   "rename_path",
   "delete_path",
