@@ -157,6 +157,7 @@ export function useCompareRowActions({
         id: 'open',
         label: '打开差异',
         icon: SquareSplitHorizontal,
+        disabled: Boolean(entry.left?.isSymlink || entry.right?.isSymlink),
         onSelect: () => onOpenNode(node),
       })
     }

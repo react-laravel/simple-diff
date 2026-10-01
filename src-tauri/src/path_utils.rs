@@ -25,7 +25,8 @@ pub fn matches_path_filter(relative_path: &str, filters: &[String]) -> bool {
       if exact_path.is_empty() {
         return false;
       }
-      return normalized_path == exact_path || normalized_path.starts_with(&format!("{exact_path}/"));
+      return normalized_path == exact_path
+        || normalized_path.starts_with(&format!("{exact_path}/"));
     }
 
     if lower_filter.contains('/') {
@@ -56,6 +57,9 @@ pub fn normalize_relative(relative: &str) -> String {
 
 /// Like normalize_relative but rejects `..` segments.
 pub fn normalize_relative_safe(relative: &str) -> Result<String, String> {
+  if relative.contains('\0') {
+    return Err("路径包含非法片段".into());
+  }
   if relative.split(['/', '\\']).any(|part| part == "..") {
     return Err("路径包含非法片段".into());
   }

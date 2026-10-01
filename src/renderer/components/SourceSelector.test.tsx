@@ -22,7 +22,7 @@ function installApiMock() {
           port: 22,
           username: 'ecs-user',
           authType: 'privateKey',
-          defaultPath: '/var/www',
+          defaultPath: '/',
         },
       ],
     })),
@@ -34,23 +34,23 @@ function installApiMock() {
       if (dirPath === '/') {
         return {
           success: true,
-          data: [
+          data: { path: '/', rootPath: '/', entries: [
             { name: 'var', path: 'var', isDirectory: true, size: 0, mtime: 1 },
             { name: 'tmp', path: 'tmp', isDirectory: true, size: 0, mtime: 1 },
-          ],
+          ] },
         }
       }
 
       if (dirPath === '/var') {
         return {
           success: true,
-          data: [
+          data: { path: '/var', rootPath: '/', entries: [
             { name: 'www', path: 'www', isDirectory: true, size: 0, mtime: 1 },
-          ],
+          ] },
         }
       }
 
-      return { success: true, data: [] }
+      return { success: true, data: { path: dirPath, rootPath: '/', entries: [] } }
     }),
     selectFolder: vi.fn(async () => ({ success: true, data: '/tmp' })),
     getPathForFile: vi.fn(() => '/tmp'),

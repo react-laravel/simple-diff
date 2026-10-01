@@ -6,7 +6,19 @@ import { resolve } from 'path'
 const host = process.env.TAURI_DEV_HOST
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      name: 'development-csp',
+      transformIndexHtml: {
+        order: 'pre',
+        handler: (html, context) => context.server
+          ? html.replace(/\s*<meta http-equiv="Content-Security-Policy"[^>]*>/i, '')
+          : html,
+      },
+    },
+  ],
   root: resolve(__dirname, 'src/renderer'),
   base: './',
   clearScreen: false,

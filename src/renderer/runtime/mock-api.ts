@@ -1,5 +1,6 @@
 import type { AppAPI, AppRuntimeInfo } from '@shared/app-api'
 import { computeTextDiffAsync } from './text-diff-client'
+import { normalizeRemoteBrowserPath } from '@shared/source-path'
 import type { CompareHistoryEntry, SSHConfig, SSHConfigInput } from '@shared/types'
 import {
   delay,
@@ -30,6 +31,9 @@ import {
 import {
   clearMockSync,
   getMockSyncTask,
+  prepareMockSync,
+  prepareMockSyncResume,
+  resumeMockSync,
   scheduleMockSyncTick,
   setMockSyncStatus,
   startMockSync,
@@ -90,7 +94,7 @@ export function createMockApi(): AppAPI {
 
     runCompare: (request) => {
       setMockCompareSources(request.left, request.right)
-      return runMockCompare(request.compareId)
+      return runMockCompare(request.compareId, request.strategies)
     },
 
     runPartialCompare: (request) => runMockPartialCompare(request),
@@ -107,9 +111,20 @@ export function createMockApi(): AppAPI {
 
     stopLocalCompareWatch: async () => ({ success: true }),
 
-    startSync: async (request) => ({ success: true, data: startMockSync(request) }),
+    prepareSync: async (request) => ({ success: true, data: prepareMockSync(request) }),
+    prepareSyncResume: async () => {
+      try { return { success: true, data: prepareMockSyncResume() } }
+      catch (error) { return { success: false, error: String(error) } }
+    },
+    startSync: async (request) => {
+      try { return { success: true, data: startMockSync(request) } }
+      catch (error) { return { success: false, error: String(error) } }
+    },
     pauseSync: async () => ({ success: true, data: setMockSyncStatus('paused') }),
-    resumeSync: async () => ({ success: true, data: setMockSyncStatus('running') }),
+    resumeSync: async (planId) => {
+      try { return { success: true, data: resumeMockSync(planId) } }
+      catch (error) { return { success: false, error: String(error) } }
+    },
     getSyncStatus: async () => ({ success: true, data: getMockSyncTask() }),
 
     clearSync: async () => {
@@ -158,7 +173,16 @@ export function createMockApi(): AppAPI {
       return { success: true, data: true }
     },
 
-    browseSSH: (_configId, dirPath) => ok(listMockRemoteEntries(dirPath), SSH_TEST_DELAY_MS),
+    browseSSH: async (configId, dirPath) => {
+      const config = sshConfigs.find((item) => item.id === configId)
+      if (!config) return { success: false, error: 'SSH 配置未找到' }
+      const rootPath = normalizeRemoteBrowserPath(config.defaultPath || '/')
+      const path = normalizeRemoteBrowserPath(dirPath.startsWith('/') ? dirPath : `${rootPath}/${dirPath}`)
+      if (rootPath !== '/' && path !== rootPath && !path.startsWith(`${rootPath}/`)) {
+        return { success: false, error: '路径超出连接的默认目录' }
+      }
+      return ok({ path, rootPath, entries: listMockRemoteEntries(path) }, SSH_TEST_DELAY_MS)
+    },
 
     listHistory: () => ok<readonly CompareHistoryEntry[]>(historyEntries),
 

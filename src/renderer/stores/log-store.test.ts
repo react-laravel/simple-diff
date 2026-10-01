@@ -46,6 +46,13 @@ describe('log-store', () => {
     expect(logs.at(-1)?.message).toBe('log-504')
   })
 
+  it('bounds individual messages before storing them', () => {
+    useLogStore.getState().addLog(createLogEntry(1, { message: 'x'.repeat(100_000) }))
+    const message = useLogStore.getState().logs[0].message
+    expect(message.length).toBeLessThan(16 * 1024 + 32)
+    expect(message).toContain('[已截断]')
+  })
+
   it('allows forcing the panel open when selecting compare tabs', () => {
     useLogStore.getState().setVisible(true)
     expect(useLogStore.getState().visible).toBe(true)

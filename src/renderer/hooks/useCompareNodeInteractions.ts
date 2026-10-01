@@ -44,7 +44,7 @@ export function useCompareNodeInteractions(
 
   const toggleNode = useCallback(
     (node: TreeNode) => {
-      if (node.isDirectory) {
+      if (node.isDirectory && !node.entry?.left?.isSymlink && !node.entry?.right?.isSymlink) {
         expandDir(node.relativePath)
       }
     },
@@ -53,7 +53,7 @@ export function useCompareNodeInteractions(
 
   const openNode = useCallback(
     (node: TreeNode) => {
-      if (!node.isDirectory && node.entry) {
+      if (!node.isDirectory && node.entry && !node.entry.left?.isSymlink && !node.entry.right?.isSymlink) {
         onDoubleClickFile(node.entry)
       }
     },

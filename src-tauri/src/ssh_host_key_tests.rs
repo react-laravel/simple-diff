@@ -111,6 +111,64 @@ fn every_new_connection_checks_host_key_before_authentication() {
       .unwrap_or(false);
     if index == 0 && success {
       let session = result.as_ref().unwrap();
+      // Exercise the source boundary against a real SFTP implementation.
+      let root = dir.0.join("root");
+      let outside = dir.0.join("outside");
+      fs::create_dir(&root).unwrap();
+      fs::create_dir(&outside).unwrap();
+      fs::write(outside.join("secret"), b"safe").unwrap();
+      std::os::unix::fs::symlink(&outside, root.join("dir-link")).unwrap();
+      std::os::unix::fs::symlink(outside.join("secret"), root.join("file-link")).unwrap();
+      let root_str = root.to_str().unwrap();
+      let entries = super::list_remote(session, root_str, "").unwrap();
+      assert!(entries
+        .iter()
+        .all(|entry| entry.is_symlink && !entry.is_directory));
+      assert!(super::read_remote_text(session, root_str, "file-link").is_err());
+      assert!(super::read_remote_text(session, root_str, "dir-link/secret").is_err());
+      assert!(super::write_remote_text(session, root_str, "dir-link/secret", "bad").is_err());
+      assert!(super::delete_remote(session, root_str, "../outside", true).is_err());
+      assert!(super::rename_remote(session, root_str, "../outside/secret", "bad").is_err());
+      assert!(super::browse_remote(session, root_str, outside.to_str().unwrap()).is_err());
+      let browse = super::browse_remote(session, root_str, root_str).unwrap();
+      assert_eq!(browse.path, root.canonicalize().unwrap().to_string_lossy());
+      assert_eq!(browse.root_path, browse.path);
+      super::rename_remote(session, root_str, "file-link", "renamed-link").unwrap();
+      super::delete_remote(session, root_str, "dir-link", true).unwrap();
+      assert_eq!(fs::read(outside.join("secret")).unwrap(), b"safe");
+      assert!(super::remote_metadata(session, root_str, "missing/child")
+        .unwrap()
+        .is_none());
+      let changing_target = root.join("changing.txt");
+      fs::write(&changing_target, b"original").unwrap();
+      let changed = super::write_remote_stream_with_metadata_checked(
+        session,
+        root_str,
+        "changing.txt",
+        &mut b"replacement".as_slice(),
+        None,
+        None,
+        &mut |_| {},
+        &mut || {
+          fs::remove_file(&changing_target).unwrap();
+          std::os::unix::fs::symlink(outside.join("secret"), &changing_target).unwrap();
+          Ok(())
+        },
+      );
+      assert!(
+        changed.is_err(),
+        "a target replaced by a link during transfer must not be published"
+      );
+      assert_eq!(fs::read(outside.join("secret")).unwrap(), b"safe");
+      assert!(fs::symlink_metadata(&changing_target)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+      assert!(!fs::read_dir(&root).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".simple-diff-")));
       let target = dir.0.join("transfer.bin");
       fs::write(&target, b"original").unwrap();
       let contents = vec![7u8; 2 * 1024 * 1024];

@@ -14,6 +14,7 @@ export interface CompareSelectionInput {
 }
 
 function canSyncEntryInDirection(entry: CompareEntry, direction: SyncDirection): boolean {
+  if (entry.left?.isSymlink || entry.right?.isSymlink) return false
   if (entry.isDirectory) {
     return direction === 'left_to_right' ? entry.state === 'left_only' : entry.state === 'right_only'
   }

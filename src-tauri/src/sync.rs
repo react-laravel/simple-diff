@@ -12,15 +12,56 @@ use uuid::Uuid;
 use crate::log_bridge;
 use crate::path_utils::normalize_relative_safe;
 use crate::secret_crypto::app_data_dir;
-use crate::source_ops::{copy_between, SourceSession};
+use crate::source_ops::{copy_between_checked, SourceSession};
 use crate::sync_plan::{expand_directory_entries, seed_sync_queues};
 use crate::types::{
   LogLevel, LogScope, SourceConfig, StartSyncRequest, SyncDirection, SyncItem, SyncItemKind,
-  SyncTaskItemSnapshot, SyncTaskItemStatus, SyncTaskSnapshot, SyncTaskStatus,
+  SyncPlanPreview, SyncTaskItemSnapshot, SyncTaskItemStatus, SyncTaskSnapshot, SyncTaskStatus,
 };
 
 const PROGRESS_NOTIFY_MS: u128 = 250;
 const PERSIST_INTERVAL_MS: u128 = 5000;
+const PLAN_TTL_SECS: u64 = 15 * 60;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TargetFingerprint {
+  Missing,
+  Directory,
+  File { size: u64, mtime: u64, sha256: String },
+}
+
+fn target_fingerprint(session: &SourceSession<'_>, relative: &str) -> Result<TargetFingerprint, String> {
+  let Some(meta) = session.metadata(relative)? else { return Ok(TargetFingerprint::Missing); };
+  if meta.is_symlink { return Err(format!("同步不支持符号链接: {relative}")); }
+  if meta.is_directory { return Ok(TargetFingerprint::Directory); }
+  let sha256 = session.hash(relative)?;
+  let after = session.metadata(relative)?.ok_or_else(|| format!("目标文件在检查时发生变化: {relative}"))?;
+  if after.is_symlink || after.is_directory || after.size != meta.size || after.mtime != meta.mtime {
+    return Err(format!("目标文件在检查时发生变化: {relative}"));
+  }
+  Ok(TargetFingerprint::File { size: meta.size, mtime: meta.mtime, sha256 })
+}
+
+fn assert_target_unchanged(expected: &TargetFingerprint, actual: &TargetFingerprint, relative: &str) -> Result<(), String> {
+  if expected == actual { return Ok(()); }
+  Err(format!("目标已被其他程序修改，已停止覆盖: {relative}。请重新对比并确认同步。"))
+}
+
+struct PreparedPlan {
+  request: StartSyncRequest,
+  items: Vec<SyncItem>,
+  expected_targets: HashMap<String, TargetFingerprint>,
+  prepared_at: Instant,
+  queue: Option<(String, HashSet<String>)>,
+}
+
+struct PreparedResume {
+  plan_id: String,
+  task_id: String,
+  pending_keys: Vec<String>,
+  prepared_at: Instant,
+}
 
 fn now_ms() -> u64 {
   SystemTime::now()
@@ -71,6 +112,8 @@ struct PersistedSyncTask {
   snapshot: SyncTaskSnapshot,
   pending_items: Vec<SyncItem>,
   all_items: Vec<SyncItem>,
+  #[serde(default)]
+  expected_targets: HashMap<String, TargetFingerprint>,
 }
 
 fn persist_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -116,6 +159,7 @@ struct InnerTask {
   completed_keys: HashSet<String>,
   in_flight: bool,
   pending_updates: HashMap<String, SyncTaskItemSnapshot>,
+  expected_targets: HashMap<String, TargetFingerprint>,
 }
 
 impl InnerTask {
@@ -128,6 +172,7 @@ impl InnerTask {
       },
       pending_items: self.pending.iter().cloned().collect(),
       all_items: self.all_items.clone(),
+      expected_targets: self.expected_targets.clone(),
     }
   }
 }
@@ -139,6 +184,8 @@ pub struct SyncManager {
   last_notify: Mutex<Instant>,
   last_persist: Mutex<Instant>,
   dirty: Mutex<bool>,
+  prepared: Mutex<HashMap<String, PreparedPlan>>,
+  prepared_resume: Mutex<Option<PreparedResume>>,
 }
 
 impl SyncManager {
@@ -150,6 +197,8 @@ impl SyncManager {
       last_notify: Mutex::new(Instant::now() - std::time::Duration::from_secs(1)),
       last_persist: Mutex::new(Instant::now() - std::time::Duration::from_secs(10)),
       dirty: Mutex::new(false),
+      prepared: Mutex::new(HashMap::new()),
+      prepared_resume: Mutex::new(None),
     }
   }
 
@@ -171,6 +220,7 @@ impl SyncManager {
         completed_keys,
         in_flight: false,
         pending_updates: HashMap::new(),
+        expected_targets: persisted.expected_targets,
       });
       if let Some(task) = self.inner.lock().as_ref() {
         save_persisted(app, Some(&task.to_persisted()));
@@ -190,9 +240,72 @@ impl SyncManager {
     })
   }
 
+  pub fn prepare(&self, app: &AppHandle, request: StartSyncRequest) -> Result<SyncPlanPreview, String> {
+    let seeded = seed_sync_queues(&request.entries, &request.direction);
+    let (_, mut items) = self.expand_items(app, &request, seeded.pending_items)?;
+    let queue = {
+      let guard = self.inner.lock();
+      guard.as_ref().filter(|task| task.snapshot.status == SyncTaskStatus::Running
+        && sources_same(&task.snapshot.left_source, &request.left_source)
+        && sources_same(&task.snapshot.right_source, &request.right_source)
+        && task.snapshot.direction == request.direction)
+        .map(|task| (task.snapshot.id.clone(), task.all_items.iter().map(item_key).collect::<HashSet<_>>()))
+    };
+    if let Some((_, existing)) = &queue { items.retain(|item| !existing.contains(&item_key(item))); }
+    let (_, target_cfg) = source_pair(&request.direction, &request.left_source, &request.right_source);
+    let target = SourceSession::open(app, &target_cfg)?;
+    let expected_targets = capture_targets(&target, &items)?;
+    let plan_id = Uuid::new_v4().to_string();
+    let preview = plan_preview(plan_id.clone(), &items, &expected_targets);
+    let mut prepared = self.prepared.lock();
+    prepared.retain(|_, plan| plan.prepared_at.elapsed().as_secs() < PLAN_TTL_SECS);
+    if prepared.len() >= 8 { prepared.clear(); }
+    prepared.insert(plan_id, PreparedPlan { request, items, expected_targets, prepared_at: Instant::now(), queue });
+    Ok(preview)
+  }
+
+  fn take_plan(&self, request: &StartSyncRequest) -> Result<PreparedPlan, String> {
+    let plan_id = request.plan_id.as_ref().ok_or("请先检查同步范围并确认覆盖数量")?;
+    let plan = self.prepared.lock().remove(plan_id).ok_or("同步确认已失效，请重新检查并确认")?;
+    if plan.prepared_at.elapsed().as_secs() >= PLAN_TTL_SECS || !same_plan_request(&plan.request, request) {
+      return Err("同步范围已改变，请重新检查并确认".into());
+    }
+    Ok(plan)
+  }
+
+  pub fn prepare_resume(&self, app: &AppHandle) -> Result<SyncPlanPreview, String> {
+    let (snapshot, pending, expected_targets) = {
+      let guard = self.inner.lock();
+      let task = guard.as_ref().ok_or("没有可继续的同步任务")?;
+      if task.in_flight { return Err("正在完成当前文件，请稍后再继续".into()); }
+      if !matches!(task.snapshot.status, SyncTaskStatus::Paused | SyncTaskStatus::Failed) {
+        return Err("同步任务当前不需要继续".into());
+      }
+      (task.snapshot.clone(), task.pending.iter().cloned().collect::<Vec<_>>(), task.expected_targets.clone())
+    };
+    let (_, target_cfg) = source_pair(&snapshot.direction, &snapshot.left_source, &snapshot.right_source);
+    let target = SourceSession::open(app, &target_cfg)?;
+    for item in &pending {
+      let expected = expected_targets.get(&item_key(item)).ok_or("恢复数据缺少目标校验，请清除任务并重新对比")?;
+      assert_target_unchanged(expected, &target_fingerprint(&target, &assert_safe_relative(&item.relative_path)?)?, &item.relative_path)?;
+    }
+    let plan_id = Uuid::new_v4().to_string();
+    let preview = plan_preview(plan_id.clone(), &pending, &expected_targets);
+    *self.prepared_resume.lock() = Some(PreparedResume {
+      plan_id, task_id: snapshot.id, pending_keys: pending.iter().map(item_key).collect(), prepared_at: Instant::now(),
+    });
+    Ok(preview)
+  }
+
   pub fn start(&self, app: AppHandle, request: StartSyncRequest) -> Result<SyncTaskSnapshot, String> {
+    let plan = self.take_plan(&request)?;
     let expected_task_id = {
       let guard = self.inner.lock();
+      if let Some((id, keys)) = &plan.queue {
+        if !guard.as_ref().map(|task| &task.snapshot.id == id && task.all_items.iter().map(item_key).collect::<HashSet<_>>() == *keys).unwrap_or(false) {
+          return Err("同步队列已改变，请重新检查并确认".into());
+        }
+      }
       if let Some(task) = guard.as_ref() {
         if task.in_flight && task.snapshot.status != SyncTaskStatus::Running {
           return Err("正在完成当前文件，请稍后再创建同步任务".into());
@@ -204,7 +317,7 @@ impl SyncManager {
           {
             let task_id = task.snapshot.id.clone();
             drop(guard);
-            return self.append_running(app, request, &task_id);
+            return self.append_running(app, plan, &task_id);
           }
           return Err("已有同步任务正在运行".into());
         }
@@ -212,8 +325,8 @@ impl SyncManager {
       guard.as_ref().map(|task| task.snapshot.id.clone())
     };
 
-    let seeded = seed_sync_queues(&request.entries, &request.direction);
-    let (pending, all_items) = self.expand_items(&app, &request, seeded.pending_items)?;
+    let all_items = plan.items;
+    let pending = all_items.iter().cloned().collect();
     let timestamp = now_ms();
     let total_items = all_items.len() as u64;
     let status = if total_items == 0 {
@@ -254,6 +367,7 @@ impl SyncManager {
         completed_keys: HashSet::new(),
         in_flight: false,
         pending_updates: HashMap::new(),
+        expected_targets: plan.expected_targets,
       });
     }
     self.commit_progress(&app, true);
@@ -279,11 +393,9 @@ impl SyncManager {
   fn append_running(
     &self,
     app: AppHandle,
-    request: StartSyncRequest,
+    plan: PreparedPlan,
     expected_task_id: &str,
   ) -> Result<SyncTaskSnapshot, String> {
-    let seeded = seed_sync_queues(&request.entries, &request.direction);
-    let (_, incoming) = self.expand_items(&app, &request, seeded.pending_items)?;
     {
       let mut guard = self.inner.lock();
       let Some(task) = guard.as_mut() else {
@@ -292,6 +404,11 @@ impl SyncManager {
       if task.snapshot.id != expected_task_id {
         return Err("同步队列已改变，请重试".into());
       }
+      if let Some((_, keys)) = &plan.queue {
+        if task.all_items.iter().map(item_key).collect::<HashSet<_>>() != *keys {
+          return Err("同步队列已改变，请重新检查并确认".into());
+        }
+      }
       let mut existing: HashSet<String> = task
         .pending
         .iter()
@@ -299,11 +416,14 @@ impl SyncManager {
         .map(item_key)
         .collect();
       let mut appended = 0usize;
-      for item in incoming {
+      for item in plan.items {
         if !existing.insert(item_key(&item)) {
           continue;
         }
         task.pending.push_back(item.clone());
+        let key = item_key(&item);
+        let expected = plan.expected_targets.get(&key).ok_or("同步计划缺少目标校验")?;
+        task.expected_targets.insert(key, expected.clone());
         task.all_items.push(item);
         appended += 1;
       }
@@ -333,14 +453,6 @@ impl SyncManager {
     request: &StartSyncRequest,
     seed_items: Vec<SyncItem>,
   ) -> Result<(VecDeque<SyncItem>, Vec<SyncItem>), String> {
-    let has_dirs = seed_items
-      .iter()
-      .any(|item| item.kind == SyncItemKind::Directory);
-    if !has_dirs {
-      let pending = seed_items.iter().cloned().collect();
-      return Ok((pending, seed_items));
-    }
-
     let (source_cfg, _) = source_pair(
       &request.direction,
       &request.left_source,
@@ -349,18 +461,28 @@ impl SyncManager {
     let session = SourceSession::open(app, &source_cfg)?;
     let mut expanded_queue = VecDeque::from(seed_items);
     let mut collected = Vec::new();
+    let mut seen = HashSet::new();
     while let Some(item) = expanded_queue.pop_front() {
       let safe = assert_safe_relative(&item.relative_path)?;
       let item = SyncItem {
         relative_path: safe,
         kind: item.kind.clone(),
       };
+      if !seen.insert(item_key(&item)) { continue; }
+      let meta = session.metadata(&item.relative_path)?.ok_or_else(|| format!("同步来源已不存在: {}", item.relative_path))?;
+      if meta.is_symlink { return Err(format!("同步不支持符号链接: {}", item.relative_path)); }
+      if meta.is_directory != (item.kind == SyncItemKind::Directory) {
+        return Err(format!("同步来源类型已改变，请重新对比: {}", item.relative_path));
+      }
       collected.push(item.clone());
       if item.kind == SyncItemKind::Directory {
         // 目录列取失败必须中止同步，静默按空目录处理会漏拷内容
         let children = session
           .list(&item.relative_path)
           .map_err(|e| format!("读取目录 {} 失败: {e}", item.relative_path))?;
+        if let Some(link) = children.iter().find(|child| child.is_symlink) {
+          return Err(format!("同步目录包含符号链接，请移除该项后重新对比: {}/{}", item.relative_path, link.name));
+        }
         let child_pairs: Vec<(String, bool)> = children
           .into_iter()
           .map(|c| (c.name, c.is_directory))
@@ -371,6 +493,11 @@ impl SyncManager {
         }
       }
     }
+    collected.sort_by(|a, b| {
+      let kind = (a.kind != SyncItemKind::Directory).cmp(&(b.kind != SyncItemKind::Directory));
+      kind.then_with(|| a.relative_path.split('/').count().cmp(&b.relative_path.split('/').count()))
+        .then_with(|| a.relative_path.cmp(&b.relative_path))
+    });
     Ok((collected.iter().cloned().collect(), collected))
   }
 
@@ -389,21 +516,28 @@ impl SyncManager {
     self.get_snapshot()
   }
 
-  pub fn resume(&self, app: AppHandle) -> Result<Option<SyncTaskSnapshot>, String> {
-    if !self.resume_state() { return Ok(self.get_snapshot()); }
+  pub fn resume(&self, app: AppHandle, plan_id: Option<String>) -> Result<Option<SyncTaskSnapshot>, String> {
+    if !self.resume_state(plan_id.as_deref())? { return Ok(self.get_snapshot()); }
     self.commit_progress(&app, true);
     self.ensure_loop(app);
     Ok(self.get_snapshot())
   }
 
-  fn resume_state(&self) -> bool {
+  fn resume_state(&self, plan_id: Option<&str>) -> Result<bool, String> {
     let mut guard = self.inner.lock();
-    let Some(task) = guard.as_mut() else { return false; };
-    if task.snapshot.status == SyncTaskStatus::Completed || task.snapshot.status == SyncTaskStatus::Running { return false; }
+    let Some(task) = guard.as_mut() else { return Ok(false); };
+    if task.snapshot.status == SyncTaskStatus::Completed || task.snapshot.status == SyncTaskStatus::Running { return Ok(false); }
+    if task.in_flight { return Err("正在完成当前文件，请稍后再继续".into()); }
+    let plan = self.prepared_resume.lock().take().ok_or("请先检查剩余同步范围并重新确认")?;
+    if plan_id != Some(plan.plan_id.as_str()) || plan.task_id != task.snapshot.id
+      || plan.prepared_at.elapsed().as_secs() >= PLAN_TTL_SECS
+      || plan.pending_keys != task.pending.iter().map(item_key).collect::<Vec<_>>() {
+      return Err("同步队列已改变，请重新检查并确认".into());
+    }
     task.snapshot.status = SyncTaskStatus::Running;
     task.snapshot.last_error = None;
     task.snapshot.updated_at = now_ms();
-    true
+    Ok(true)
   }
 
   fn clear_state(&self) -> Result<(), String> {
@@ -483,6 +617,11 @@ impl SyncManager {
         return;
       }
     };
+    // A separate connection permits validation while the writer owns its SFTP session lock.
+    let verify_target = match SourceSession::open(&app, &target_cfg) {
+      Ok(s) => s,
+      Err(err) => { self.fail(&app, &task_id, err); return; }
+    };
 
     loop {
       let item = {
@@ -524,14 +663,31 @@ impl SyncManager {
         }
       };
 
+      let expected = self.inner.lock().as_ref()
+        .and_then(|task| task.expected_targets.get(&item_key(&item)).cloned());
+      let Some(expected) = expected else {
+        self.fail(&app, &task_id, "恢复数据缺少目标校验，请清除任务并重新对比".into());
+        break;
+      };
+      let mut verify = || {
+        assert_target_unchanged(&expected, &target_fingerprint(&verify_target, &relative)?, &relative)
+      };
+      if let Err(err) = verify() {
+        self.fail(&app, &task_id, err);
+        break;
+      }
+
       let exec = match item.kind {
         SyncItemKind::Directory => target.ensure_dir(&relative),
         SyncItemKind::File => {
           if let Some(parent) = parent_of(&relative) {
-            let _ = target.ensure_dir(&parent);
+            if let Err(err) = target.ensure_dir(&parent) {
+              self.fail(&app, &task_id, err);
+              break;
+            }
           }
           let mut last_update = Instant::now();
-          copy_between(&source, &target, &relative, &mut |bytes, total| {
+          copy_between_checked(&source, &target, &relative, &mut |bytes, total| {
             if bytes != total && last_update.elapsed().as_millis() < PROGRESS_NOTIFY_MS { return; }
             last_update = Instant::now();
             {
@@ -543,7 +699,7 @@ impl SyncManager {
               }
             }
             self.publish_progress(&app);
-          })
+          }, &mut verify)
         }
       };
 
@@ -640,6 +796,33 @@ fn parent_of(relative: &str) -> Option<String> {
   }
   parts.pop();
   Some(parts.join("/"))
+}
+
+fn same_plan_request(a: &StartSyncRequest, b: &StartSyncRequest) -> bool {
+  a.compare_id == b.compare_id && a.direction == b.direction
+    && sources_same(&a.left_source, &b.left_source) && sources_same(&a.right_source, &b.right_source)
+    && serde_json::to_value(&a.entries).ok() == serde_json::to_value(&b.entries).ok()
+}
+
+fn capture_targets(session: &SourceSession<'_>, items: &[SyncItem]) -> Result<HashMap<String, TargetFingerprint>, String> {
+  let mut expected = HashMap::new();
+  for item in items {
+    let fingerprint = target_fingerprint(session, &item.relative_path)?;
+    if matches!((&item.kind, &fingerprint), (SyncItemKind::File, TargetFingerprint::Directory) | (SyncItemKind::Directory, TargetFingerprint::File { .. })) {
+      return Err(format!("目标同名项的文件类型冲突，请先处理后重新对比: {}", item.relative_path));
+    }
+    expected.insert(item_key(item), fingerprint);
+  }
+  Ok(expected)
+}
+
+fn plan_preview(plan_id: String, items: &[SyncItem], expected: &HashMap<String, TargetFingerprint>) -> SyncPlanPreview {
+  SyncPlanPreview {
+    plan_id,
+    files: items.iter().filter(|item| item.kind == SyncItemKind::File).count() as u64,
+    directories: items.iter().filter(|item| item.kind == SyncItemKind::Directory).count() as u64,
+    overwrites: items.iter().filter(|item| item.kind == SyncItemKind::File && matches!(expected.get(&item_key(item)), Some(TargetFingerprint::File { .. }))).count() as u64,
+  }
 }
 
 fn derive_completed_keys(all: &[SyncItem], pending: &VecDeque<SyncItem>) -> HashSet<String> {

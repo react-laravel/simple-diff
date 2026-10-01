@@ -13,7 +13,7 @@ import { createMockCompareEntries } from './mock-tree'
 
 const APP_API_MEMBERS: readonly (keyof AppAPI)[] = [
   'runtime', 'listFiles', 'readText', 'writeText', 'runCompare', 'runPartialCompare',
-  'cancelCompare', 'startLocalCompareWatch', 'stopLocalCompareWatch', 'startSync',
+  'cancelCompare', 'startLocalCompareWatch', 'stopLocalCompareWatch', 'prepareSync', 'prepareSyncResume', 'startSync',
   'pauseSync', 'resumeSync', 'getSyncStatus', 'clearSync', 'onScanComplete',
   'onEntryUpdate', 'onCompareLocalDirty', 'onSyncProgress', 'onLog', 'writeLog',
   'textDiff', 'listSSHConfigs', 'saveSSHConfig', 'deleteSSHConfig', 'testSSHConnection',
@@ -82,6 +82,13 @@ describe('mock 固定数据', () => {
     const different = entries.filter((entry) => entry.state === 'different' && !entry.isDirectory)
     expect(different.length).toBeGreaterThan(0)
     expect(different.every((entry) => entry.reasons.length > 0)).toBe(true)
+  })
+
+  it('honors selected strategies and collects reasons in the selected order', () => {
+    const changed = createMockCompareEntries(['mtime', 'size', 'hash']).find((entry) => entry.state === 'different' && !entry.isDirectory)
+    expect(changed?.reasons.map((reason) => reason.type)).toEqual(['mtime', 'size', 'hash'])
+    const sizeOnly = createMockCompareEntries(['size']).find((entry) => entry.relativePath === changed?.relativePath)
+    expect(sizeOnly?.reasons.map((reason) => reason.type)).toEqual(['size'])
   })
 })
 
@@ -189,19 +196,40 @@ describe('mock 文件访问', () => {
 describe('mock 同步任务', () => {
   const entries = createMockCompareEntries()
 
+  it('requires one-use confirmation tokens for start and resume', async () => {
+    vi.useFakeTimers()
+    const api = createMockApi()
+    await api.clearSync()
+    const request = { compareId: 'checked', leftSource: MOCK_LEFT_SOURCE, rightSource: MOCK_RIGHT_SOURCE, direction: 'right_to_left' as const, entries: entries.filter((entry) => entry.state === 'right_only' && !entry.isDirectory).slice(0, 1) }
+    expect((await api.startSync(request)).success).toBe(false)
+    const plan = await api.prepareSync(request)
+    const confirmed = { ...request, planId: plan.data?.planId }
+    expect((await api.startSync(confirmed)).success).toBe(true)
+    expect((await api.startSync(confirmed)).success).toBe(false)
+    await api.pauseSync()
+    expect((await api.resumeSync()).success).toBe(false)
+    const resumePlan = await api.prepareSyncResume()
+    expect((await api.resumeSync(resumePlan.data?.planId)).success).toBe(true)
+    expect((await api.resumeSync(resumePlan.data?.planId)).success).toBe(false)
+    await api.clearSync()
+  })
+
   it('启动后逐步推进并最终完成', async () => {
     vi.useFakeTimers()
     const api = createMockApi()
+    await api.clearSync()
     const snapshots: (Parameters<Parameters<AppAPI['onSyncProgress']>[0]>[0])[] = []
     const unsubscribe = api.onSyncProgress((task) => snapshots.push(task))
 
-    const started = await api.startSync({
+    const request = {
       compareId: 'compare-sync',
       leftSource: MOCK_LEFT_SOURCE,
       rightSource: MOCK_RIGHT_SOURCE,
-      direction: 'right_to_left',
-      entries: entries.filter((entry) => entry.state === 'right_only').slice(0, 3),
-    })
+      direction: 'right_to_left' as const,
+      entries: entries.filter((entry) => entry.state === 'right_only' && !entry.isDirectory).slice(0, 3),
+    }
+    const plan = await api.prepareSync(request)
+    const started = await api.startSync({ ...request, planId: plan.data?.planId })
 
     expect(started.success).toBe(true)
     expect(started.data?.status).toBe('running')
@@ -219,13 +247,15 @@ describe('mock 同步任务', () => {
   it('暂停后停止推进，恢复后继续', async () => {
     vi.useFakeTimers()
     const api = createMockApi()
-    await api.startSync({
+    const request = {
       compareId: 'compare-sync-pause',
       leftSource: MOCK_LEFT_SOURCE,
       rightSource: MOCK_RIGHT_SOURCE,
-      direction: 'right_to_left',
+      direction: 'right_to_left' as const,
       entries: entries.filter((entry) => entry.state === 'right_only'),
-    })
+    }
+    const plan = await api.prepareSync(request)
+    await api.startSync({ ...request, planId: plan.data?.planId })
 
     const paused = await api.pauseSync()
     expect(paused.data?.status).toBe('paused')
@@ -233,7 +263,8 @@ describe('mock 同步任务', () => {
     await vi.advanceTimersByTimeAsync(3000)
     expect((await api.getSyncStatus()).data?.completedItems).toBe(0)
 
-    const resumed = await api.resumeSync()
+    const resumePlan = await api.prepareSyncResume()
+    const resumed = await api.resumeSync(resumePlan.data?.planId)
     expect(resumed.data?.status).toBe('running')
     await vi.advanceTimersByTimeAsync(2000)
     expect((await api.getSyncStatus()).data?.completedItems).toBeGreaterThan(0)
@@ -242,13 +273,15 @@ describe('mock 同步任务', () => {
   it('同步到右会在锁定文件上失败，覆盖 failed 状态', async () => {
     vi.useFakeTimers()
     const api = createMockApi()
-    await api.startSync({
+    const request = {
       compareId: 'compare-sync-fail',
       leftSource: MOCK_LEFT_SOURCE,
       rightSource: MOCK_RIGHT_SOURCE,
-      direction: 'left_to_right',
+      direction: 'left_to_right' as const,
       entries: entries.filter((entry) => entry.relativePath === MOCK_SYNC_FAILURE_PATH),
-    })
+    }
+    const plan = await api.prepareSync(request)
+    await api.startSync({ ...request, planId: plan.data?.planId })
 
     await vi.advanceTimersByTimeAsync(2000)
     const status = await api.getSyncStatus()
@@ -308,12 +341,14 @@ describe('mock SSH / 历史 / 选择器', () => {
   it('browseSSH 返回远端目录', async () => {
     vi.useFakeTimers()
     const api = createMockApi()
-    const pending = api.browseSSH('ssh-staging', '/srv')
+    const pending = api.browseSSH('ssh-staging', '/srv/www/acme')
     await vi.advanceTimersByTimeAsync(700)
     const result = await pending
 
-    expect(result.data?.map((entry) => entry.name)).toContain('www')
-    expect(result.data?.every((entry) => entry.isDirectory)).toBe(true)
+    expect(result.data?.path).toBe('/srv/www/acme')
+    expect(result.data?.rootPath).toBe('/srv/www/acme')
+    expect(result.data?.entries.map((entry) => entry.name)).toContain('src')
+    expect(result.data?.entries.every((entry) => entry.isDirectory)).toBe(true)
   })
 
   it('历史条目可按 id 删除', async () => {

@@ -24,6 +24,13 @@
 
 /* Each resizable pane owns its metadata breakpoint, including asymmetric splits. */
 .compare-side-table { container-type: inline-size; }
+.compare-merged-table { container-type: inline-size; }
+@container (max-width: 720px) {
+  .compare-merged-table .tree-time-column { display: none; }
+}
+@container (max-width: 440px) {
+  .compare-merged-table .tree-size-column { display: none; }
+}
 @container (max-width: 520px) {
   .compare-side-table .tree-time-column { display: none; }
 }

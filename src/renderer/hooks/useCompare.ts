@@ -15,7 +15,7 @@ import {
 import { useAppStore, type CompareTab } from '../stores/app-store'
 import { useSettingsStore } from '../stores/settings-store'
 import { useSSHStore } from '../stores/ssh-store'
-import type { CompareCacheEntry, CompareEntry, CompareResult, SourceConfig } from '../../../shared/types'
+import type { CompareResult, SourceConfig } from '../../../shared/types'
 import { addRendererLog } from '../stores/log-store'
 import { flushBufferedCompareEvents } from '../utils/compare-events'
 import { formatCompareTabTitleFromSources } from '../utils/source-label'
@@ -43,34 +43,6 @@ function createCompareSessionId(): string {
     return crypto.randomUUID()
   }
   return Math.random().toString(36).slice(2)
-}
-
-function createCompareCacheEntries(entries: readonly CompareEntry[]): readonly CompareCacheEntry[] {
-  const cacheEntries: CompareCacheEntry[] = []
-
-  for (const entry of entries) {
-    if (entry.isDirectory) continue
-    if (!entry.left || !entry.right) continue
-    if (entry.state !== 'equal' && entry.state !== 'different') continue
-
-    cacheEntries.push({
-      relativePath: entry.relativePath,
-      state: entry.state,
-      left: {
-        isDirectory: entry.left.isDirectory,
-        size: entry.left.size,
-        mtime: entry.left.mtime,
-      },
-      right: {
-        isDirectory: entry.right.isDirectory,
-        size: entry.right.size,
-        mtime: entry.right.mtime,
-      },
-      reasons: entry.reasons,
-    })
-  }
-
-  return cacheEntries
 }
 
 function formatCompareTabTitle(leftSource: SourceConfig, rightSource: SourceConfig): string {
@@ -287,7 +259,6 @@ async function runPartialCompareForRoots(relativeRoots: readonly string[]): Prom
   }
 
   const effectivePathFilters = mergePathFilters(globalPathFilters, compareState.extensionFilter)
-  const previousEntries = createCompareCacheEntries(compareState.entries)
 
   addRendererLog('compare', 'info', `开始局部重比对 roots=${effectiveRelativeRoots.join('、') || '.'}`)
   const response = await window.api.runPartialCompare({
@@ -296,7 +267,6 @@ async function runPartialCompareForRoots(relativeRoots: readonly string[]): Prom
     right: compareState.rightSource,
     strategies: [...compareState.strategies],
     extensionFilter: effectivePathFilters.length > 0 ? effectivePathFilters : undefined,
-    previousEntries: previousEntries.length > 0 ? previousEntries : undefined,
     relativeRoots: effectiveRelativeRoots,
   })
 
@@ -355,7 +325,6 @@ export function useCompareActions() {
       : null
     const globalPathFilters = useSettingsStore.getState().globalPathFilters
     const effectivePathFilters = mergePathFilters(globalPathFilters, currentExtensionFilter)
-    const previousEntries = createCompareCacheEntries(compareState.entries)
     const currentLeftSource = buildSourceConfig(currentLeftSourceType, currentLeftPath, currentLeftSSHConfigId)
     const currentRightSource = buildSourceConfig(currentRightSourceType, currentRightPath, currentRightSSHConfigId)
 
@@ -415,7 +384,6 @@ export function useCompareActions() {
         right,
         strategies: [...currentStrategies],
         extensionFilter: effectivePathFilters.length > 0 ? effectivePathFilters : undefined,
-        previousEntries: previousEntries.length > 0 ? previousEntries : undefined,
       })
 
       if (response.success && response.data) {

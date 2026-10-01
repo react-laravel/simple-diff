@@ -4,6 +4,7 @@ export interface FileEntry {
   readonly name: string
   readonly path: string // relative to comparison root
   readonly isDirectory: boolean
+  readonly isSymlink?: boolean
   readonly size: number // bytes
   readonly mtime: number // Unix timestamp ms
 }
@@ -45,6 +46,12 @@ export interface SSHConfigInput {
   readonly passphrase?: string
 }
 
+export interface SSHBrowseResult {
+  readonly path: string
+  readonly rootPath: string
+  readonly entries: readonly FileEntry[]
+}
+
 /** Main-process only — contains encrypted secrets */
 export interface SSHConfigInternal extends SSHConfig {
   readonly password?: string
@@ -58,6 +65,7 @@ export type CompareState = 'pending' | 'comparing' | 'equal' | 'left_only' | 'ri
 export type CompareFilter = CompareState | 'all' | 'paired' | 'unresolved'
 
 export type DiffReason =
+  | { readonly type: 'type'; readonly leftType: 'file' | 'directory' | 'symlink'; readonly rightType: 'file' | 'directory' | 'symlink' }
   | { readonly type: 'size'; readonly leftSize: number; readonly rightSize: number }
   | { readonly type: 'mtime'; readonly leftMtime: number; readonly rightMtime: number }
   | { readonly type: 'hash'; readonly leftHash: string; readonly rightHash: string }
@@ -77,6 +85,7 @@ export interface CompareEntry {
 
 export interface CompareFileFingerprint {
   readonly isDirectory: boolean
+  readonly isSymlink?: boolean
   readonly size: number
   readonly mtime: number
 }
@@ -180,6 +189,14 @@ export interface StartSyncRequest {
   readonly rightSource: SourceConfig
   readonly direction: SyncDirection
   readonly entries: readonly CompareEntry[]
+  readonly planId?: string
+}
+
+export interface SyncPlanPreview {
+  readonly planId: string
+  readonly files: number
+  readonly directories: number
+  readonly overwrites: number
 }
 
 // ─── Text Diff ───────────────────────────────────────────────

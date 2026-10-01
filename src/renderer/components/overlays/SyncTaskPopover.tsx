@@ -56,7 +56,7 @@ export default function SyncTaskPopover() {
           <Button size="sm" icon={Pause} onClick={() => void pause()}>暂停</Button>
         ) : null}
         {syncTask.status === 'paused' || syncTask.status === 'failed' ? (
-          <Button size="sm" icon={Play} onClick={() => void resume()}>继续</Button>
+          <Button size="sm" icon={Play} disabled={syncTask.status === 'paused' && Boolean(syncTask.currentPath)} onClick={() => void resume()}>继续</Button>
         ) : null}
         <Button size="sm" icon={Trash2} disabled={syncTask.status === 'running' || (syncTask.status === 'paused' && Boolean(syncTask.currentPath))} onClick={() => void clear()}>
           清除

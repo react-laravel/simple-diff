@@ -1,5 +1,15 @@
 import type { SourceConfig, SourceType } from './types'
 
+export function normalizeRemoteBrowserPath(path: string): string {
+  const segments: string[] = []
+  for (const segment of path.trim().split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') segments.pop()
+    else segments.push(segment)
+  }
+  return `/${segments.join('/')}`
+}
+
 function getSourceType(source: SourceConfig | SourceType): SourceType {
   return typeof source === 'string' ? source : source.type
 }

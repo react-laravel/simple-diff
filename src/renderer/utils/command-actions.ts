@@ -1,5 +1,5 @@
 import { reportSyncResult } from './sync-feedback'
-import { confirmSync } from './confirm-sync'
+import { confirmSync, confirmSyncResume } from './confirm-sync'
 import { confirmUnsavedChanges, getAllDiffTabs, isDiffTabDirty } from './unsaved-changes'
 import type { SyncDirection, SyncTaskSnapshot } from '../../../shared/types'
 import { getRuntimeInfo } from '../runtime/runtime-info'
@@ -148,8 +148,9 @@ export async function startCompareSync(direction: SyncDirection): Promise<void> 
     direction,
     entries,
   }
-  if (!await confirmSync(request)) return
-  const response = await reportSyncResult(() => window.api.startSync(request))
+  const prepared = await confirmSync(request)
+  if (!prepared) return
+  const response = await reportSyncResult(() => window.api.startSync(prepared))
 
   if (!response.success) return
 
@@ -172,7 +173,11 @@ export async function pauseCompareSync(): Promise<void> {
 }
 
 export async function resumeCompareSync(): Promise<void> {
-  const response = await reportSyncResult(() => window.api.resumeSync())
+  const task = useCompareStore.getState().syncTask
+  if (!task || (task.status !== 'paused' && task.status !== 'failed')) return
+  const planId = await confirmSyncResume(task)
+  if (!planId) return
+  const response = await reportSyncResult(() => window.api.resumeSync(planId))
   if (response.success) useCompareStore.getState().setSyncTask(response.data ?? null)
 }
 

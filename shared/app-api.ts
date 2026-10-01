@@ -11,7 +11,9 @@ import type {
   SourceConfig,
   SSHConfig,
   SSHConfigInput,
+  SSHBrowseResult,
   StartSyncRequest,
+  SyncPlanPreview,
   SyncTaskSnapshot,
   TextDiffResult,
 } from './types'
@@ -39,8 +41,10 @@ export interface AppAPI {
   startLocalCompareWatch: (request: CompareLocalWatchRequest) => Promise<IpcResult<void>>
   stopLocalCompareWatch: (sessionId?: string) => Promise<IpcResult<void>>
   startSync: (request: StartSyncRequest) => Promise<IpcResult<SyncTaskSnapshot>>
+  prepareSync: (request: StartSyncRequest) => Promise<IpcResult<SyncPlanPreview>>
+  prepareSyncResume: () => Promise<IpcResult<SyncPlanPreview>>
   pauseSync: () => Promise<IpcResult<SyncTaskSnapshot | null>>
-  resumeSync: () => Promise<IpcResult<SyncTaskSnapshot | null>>
+  resumeSync: (planId?: string) => Promise<IpcResult<SyncTaskSnapshot | null>>
   getSyncStatus: () => Promise<IpcResult<SyncTaskSnapshot | null>>
   clearSync: () => Promise<IpcResult<void>>
 
@@ -58,7 +62,7 @@ export interface AppAPI {
   saveSSHConfig: (config: SSHConfigInput) => Promise<IpcResult<SSHConfig>>
   deleteSSHConfig: (id: string) => Promise<IpcResult<void>>
   testSSHConnection: (id: string) => Promise<IpcResult<boolean>>
-  browseSSH: (configId: string, dirPath: string) => Promise<IpcResult<readonly FileEntry[]>>
+  browseSSH: (configId: string, dirPath: string) => Promise<IpcResult<SSHBrowseResult>>
 
   listHistory: () => Promise<IpcResult<readonly CompareHistoryEntry[]>>
   clearHistory: () => Promise<IpcResult<void>>
@@ -81,4 +85,3 @@ export type DirectoryDragDropEvent =
   | { readonly type: 'over'; readonly x: number; readonly y: number }
   | { readonly type: 'leave' }
   | { readonly type: 'drop'; readonly x: number; readonly y: number; readonly paths: readonly string[] }
-

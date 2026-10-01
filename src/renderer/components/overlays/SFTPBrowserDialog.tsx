@@ -1,17 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Check, Folder, RefreshCw, ServerOff } from 'lucide-react'
-import { joinSourcePath, trimTrailingSeparators } from '@shared/source-path'
+import { joinSourcePath, normalizeRemoteBrowserPath } from '@shared/source-path'
 import type { FileEntry } from '../../../../shared/types'
 import { Button, Dialog, EmptyState, Panel, Skeleton } from '../ui'
 
-export function normalizeRemoteBrowserPath(path: string): string {
-  const trimmed = trimTrailingSeparators(path.trim())
-  if (!trimmed) {
-    return '/'
-  }
-
-  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
-}
+export { normalizeRemoteBrowserPath } from '@shared/source-path'
 
 export function getRemoteParentPath(path: string): string {
   const normalizedPath = normalizeRemoteBrowserPath(path)
@@ -54,53 +47,69 @@ export default function SFTPBrowserDialog({
   sideLabel,
 }: SFTPBrowserDialogProps) {
   const [path, setPath] = useState('/')
+  const [rootPath, setRootPath] = useState<string | null>(null)
+  const [confirmedPath, setConfirmedPath] = useState<string | null>(null)
   const [directories, setDirectories] = useState<readonly FileEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const requestIdRef = useRef(0)
 
   const loadDirectories = useCallback(async (nextPath: string) => {
     if (!sshConfigId) return
-
+    const requestId = ++requestIdRef.current
+    setPath(nextPath)
+    setConfirmedPath(null)
+    setDirectories([])
     setLoading(true)
     setError(null)
-
-    const result = await window.api.browseSSH(sshConfigId, nextPath)
-    if (result.success && result.data) {
-      setDirectories(
-        result.data
-          .filter((entry) => entry.isDirectory)
-          .slice()
-          .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
-      )
-    } else {
-      setDirectories([])
-      setError(result.error ?? '远程目录读取失败')
+    try {
+      const result = await window.api.browseSSH(sshConfigId, nextPath)
+      if (requestIdRef.current !== requestId) return
+      if (result.success && result.data) {
+        setPath(result.data.path)
+        setConfirmedPath(result.data.path)
+        setRootPath(result.data.rootPath)
+        setDirectories(
+          result.data.entries
+            .filter((entry) => entry.isDirectory && !entry.isSymlink)
+            .slice()
+            .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')),
+        )
+      } else {
+        setError(result.error ?? '远程目录读取失败')
+      }
+    } catch (cause) {
+      if (requestIdRef.current !== requestId) return
+      setError(cause instanceof Error ? cause.message : '远程目录读取失败')
+    } finally {
+      if (requestIdRef.current === requestId) setLoading(false)
     }
-
-    setLoading(false)
   }, [sshConfigId])
 
   const navigate = useCallback((nextPath: string) => {
     const normalized = normalizeRemoteBrowserPath(nextPath)
-    setPath(normalized)
     void loadDirectories(normalized)
   }, [loadDirectories])
 
   // 只在「关 → 开」那一刻定位一次；之后 `path` 归用户的导航管，`initialPath` 再变
   // （对话框是模态的，实际上不会）也不会把用户拽回起点。
-  const openedRef = useRef(false)
+  const openedRef = useRef<string | null>(null)
   useEffect(() => {
     if (!open) {
-      openedRef.current = false
+      openedRef.current = null
+      ++requestIdRef.current
       return
     }
-    if (openedRef.current) return
-    openedRef.current = true
+    if (openedRef.current === sshConfigId) return
+    openedRef.current = sshConfigId
 
-    const normalized = normalizeRemoteBrowserPath(initialPath || '/')
-    setPath(normalized)
+    const normalized = initialPath.startsWith('/') ? normalizeRemoteBrowserPath(initialPath) : initialPath.trim() || '/'
+    setRootPath(null)
     void loadDirectories(normalized)
-  }, [initialPath, loadDirectories, open])
+  }, [initialPath, loadDirectories, open, sshConfigId])
+
+  useEffect(() => () => { ++requestIdRef.current; openedRef.current = null }, [])
+  const canGoUp = rootPath !== null && path !== rootPath && path !== '/'
 
   return (
     <Dialog
@@ -115,9 +124,10 @@ export default function SFTPBrowserDialog({
           <Button
             variant="primary"
             icon={Check}
-            disabled={loading}
+            disabled={loading || error !== null || confirmedPath === null}
             onClick={() => {
-              onSelect(path)
+              if (!confirmedPath || loading || error) return
+              onSelect(confirmedPath)
               onOpenChange(false)
             }}
           >
@@ -131,7 +141,7 @@ export default function SFTPBrowserDialog({
           <Button
             size="sm"
             icon={ArrowLeft}
-            disabled={loading || path === '/'}
+            disabled={loading || !canGoUp}
             onClick={() => navigate(getRemoteParentPath(path))}
           >
             上一级
@@ -161,7 +171,7 @@ export default function SFTPBrowserDialog({
             error={error}
             action={<Button variant="primary" icon={RefreshCw} onClick={() => void loadDirectories(path)}>重试</Button>}
             secondaryAction={
-              path === '/' ? undefined : (
+              !canGoUp ? undefined : (
                 <Button variant="ghost" icon={ArrowLeft} onClick={() => navigate(getRemoteParentPath(path))}>
                   返回上一级
                 </Button>

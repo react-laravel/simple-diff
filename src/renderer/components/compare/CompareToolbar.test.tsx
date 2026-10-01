@@ -57,6 +57,7 @@ function installApiMock(overrides: Partial<Window['api']> = {}) {
     },
     runCompare: vi.fn(() => new Promise(() => undefined)),
     cancelCompare: vi.fn(async () => ({ success: true })),
+    prepareSync: vi.fn(async () => ({ success: true, data: { planId: 'checked-plan', files: 4, directories: 2, overwrites: 3 } })),
     startSync: vi.fn(async () => ({ success: true, data: null })),
     pauseSync: vi.fn(async () => ({ success: true, data: null })),
     resumeSync: vi.fn(async () => ({ success: true, data: null })),

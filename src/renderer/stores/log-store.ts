@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { LogEntry, LogLevel, LogScope } from '../../../shared/types'
 
 const MAX_LOGS = 500
+const MAX_MESSAGE_LENGTH = 16 * 1024
 const DEFAULT_HEIGHT = 144
 const MIN_HEIGHT = 80
 const MAX_HEIGHT = 480
@@ -41,7 +42,7 @@ export const useLogStore = create<LogStore>((set, get) => ({
   height: readPersistedHeight(),
 
   addLog: (entry) => {
-    const logs = [...get().logs, entry]
+    const logs = [...get().logs, { ...entry, message: boundLogMessage(entry.message) }]
     set({ logs: logs.length > MAX_LOGS ? logs.slice(-MAX_LOGS) : logs })
   },
 
@@ -69,7 +70,7 @@ export function addRendererLog(scope: LogScope, level: LogLevel, message: string
     timestamp: Date.now(),
     scope,
     level,
-    message: `[renderer] ${message}`,
+    message: boundLogMessage(`[renderer] ${message}`),
   }
   if (typeof window !== 'undefined') {
     try {
@@ -82,4 +83,8 @@ export function addRendererLog(scope: LogScope, level: LogLevel, message: string
   queueMicrotask(() => {
     useLogStore.getState().addLog(entry)
   })
+}
+
+function boundLogMessage(message: string): string {
+  return message.length <= MAX_MESSAGE_LENGTH ? message : `${message.slice(0, MAX_MESSAGE_LENGTH)}…[已截断]`
 }

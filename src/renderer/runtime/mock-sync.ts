@@ -2,6 +2,7 @@ import type {
   CompareEntry,
   StartSyncRequest,
   SyncDirection,
+  SyncPlanPreview,
   SyncTaskItemSnapshot,
   SyncTaskSnapshot,
 } from '@shared/types'
@@ -12,6 +13,53 @@ import { createMockCompareEntries } from './mock-tree'
 /** 浏览器预览模式的同步任务状态机：逐项推进，覆盖完成 / 暂停 / 失败三种收尾。 */
 
 const SYNC_TICK_MS = 1000
+const plans = new Map<string, { request: StartSyncRequest; items: readonly SyncTaskItemSnapshot[] }>()
+let resumePlan: { planId: string; taskId: string; updatedAt: number } | null = null
+
+function preview(planId: string, items: readonly SyncTaskItemSnapshot[], direction: SyncDirection): SyncPlanPreview {
+  const known = new Map(createMockCompareEntries().map((entry) => [entry.relativePath, entry]))
+  return {
+    planId,
+    files: items.filter((item) => item.kind === 'file').length,
+    directories: items.filter((item) => item.kind === 'directory').length,
+    overwrites: items.filter((item) => item.kind === 'file' && (direction === 'left_to_right' ? known.get(item.relativePath)?.right : known.get(item.relativePath)?.left)).length,
+  }
+}
+
+export function prepareMockSync(request: StartSyncRequest): SyncPlanPreview {
+  const roots = request.entries.filter((entry) => (entry.state === 'different' && !entry.isDirectory)
+    || entry.state === (request.direction === 'left_to_right' ? 'left_only' : 'right_only'))
+  const known = createMockCompareEntries()
+  const expanded = new Map<string, CompareEntry>()
+  for (const entry of roots) {
+    expanded.set(entry.relativePath, entry)
+    if (entry.isDirectory) {
+      for (const child of known) if (child.relativePath.startsWith(`${entry.relativePath}/`)) expanded.set(child.relativePath, child)
+    }
+  }
+  const existing = new Set(syncTask?.status === 'running' && syncTask.direction === request.direction
+    && JSON.stringify(syncTask.leftSource) === JSON.stringify(request.leftSource) && JSON.stringify(syncTask.rightSource) === JSON.stringify(request.rightSource)
+    ? syncTask.items?.map((item) => item.relativePath) : [])
+  const items = Array.from(expanded.values()).filter((entry) => !existing.has(entry.relativePath))
+    .map((entry): SyncTaskItemSnapshot => ({ relativePath: entry.relativePath, kind: entry.isDirectory ? 'directory' : 'file', status: 'pending' }))
+  const planId = `mock-plan-${crypto.randomUUID()}`
+  plans.set(planId, { request, items })
+  return preview(planId, items, request.direction)
+}
+
+export function prepareMockSyncResume(): SyncPlanPreview {
+  if (!syncTask || (syncTask.status !== 'paused' && syncTask.status !== 'failed')) throw new Error('没有可继续的同步任务')
+  const planId = `mock-resume-${crypto.randomUUID()}`
+  resumePlan = { planId, taskId: syncTask.id, updatedAt: syncTask.updatedAt }
+  return preview(planId, syncTask.items?.filter((item) => item.status !== 'completed') ?? [], syncTask.direction)
+}
+
+export function resumeMockSync(planId?: string): SyncTaskSnapshot | null {
+  const plan = resumePlan
+  resumePlan = null
+  if (!syncTask || !plan || plan.planId !== planId || plan.taskId !== syncTask.id || plan.updatedAt !== syncTask.updatedAt) throw new Error('请先检查剩余同步范围并重新确认')
+  return setMockSyncStatus('running')
+}
 
 function buildSyncItems(
   entries: readonly CompareEntry[],
@@ -133,15 +181,29 @@ function advanceSync(): void {
 }
 
 export function startMockSync(request: StartSyncRequest): SyncTaskSnapshot {
-  const items = buildSyncItems(request.entries, request.direction)
+  const plan = request.planId ? plans.get(request.planId) : undefined
+  if (request.planId) plans.delete(request.planId)
+  const { planId: _planId, ...unconfirmedRequest } = request
+  if (!plan || JSON.stringify(plan.request) !== JSON.stringify(unconfirmedRequest)) throw new Error('请先检查同步范围并确认覆盖数量')
+  const items = plan.items
   const now = Date.now()
+
+  if (syncTask?.status === 'running' && syncTask.direction === request.direction
+    && JSON.stringify(syncTask.leftSource) === JSON.stringify(request.leftSource)
+    && JSON.stringify(syncTask.rightSource) === JSON.stringify(request.rightSource)) {
+    const allItems = [...(syncTask.items ?? []), ...items]
+    syncTask = { ...syncTask, totalItems: allItems.length, items: allItems, updatedAt: now }
+    syncEmitter.emit(syncTask)
+    scheduleMockSyncTick()
+    return syncTask
+  }
 
   syncTask = {
     id: `mock-sync-${now.toString(36)}`,
     leftSource: request.leftSource,
     rightSource: request.rightSource,
     direction: request.direction,
-    status: 'running',
+    status: items.length === 0 ? 'completed' : 'running',
     totalItems: items.length,
     completedItems: 0,
     currentPath: items[0]?.relativePath ?? null,

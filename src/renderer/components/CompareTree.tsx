@@ -133,7 +133,7 @@ export default function CompareTree({
   const focusedIndex = keyboard.focusedIndex < 0 ? 0 : keyboard.focusedIndex
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border bg-surface">
+    <div className="compare-merged-table flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border bg-surface">
       <div className="flex h-row-tree shrink-0 items-center gap-1.5 border-b border-border bg-surface-2 pr-1 pl-2 text-2xs font-medium tracking-wider text-fg-muted uppercase">
         <span className="min-w-0 flex-1 truncate">名称</span>
         <span className={cn('flex items-center', META_GAP)}>

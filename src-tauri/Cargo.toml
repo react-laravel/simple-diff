@@ -36,6 +36,7 @@ once_cell = "1"
 aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 # Signed macOS apps must not depend on Homebrew dylibs. Keep other platforms unchanged.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -43,3 +44,6 @@ ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 ssh2 = "0.9"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_System_Threading"] }

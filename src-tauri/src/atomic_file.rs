@@ -21,6 +21,18 @@ pub fn replace_from_reader_with_metadata(
   modified: Option<std::time::SystemTime>,
   progress: &mut dyn FnMut(u64),
 ) -> Result<u64, String> {
+  replace_from_reader_with_metadata_checked(target, reader, permissions, modified, progress, &mut || Ok(()))
+}
+
+/// Revalidate the destination after streaming, immediately before publishing the temporary file.
+pub fn replace_from_reader_with_metadata_checked(
+  target: &Path,
+  reader: &mut dyn Read,
+  permissions: Option<fs::Permissions>,
+  modified: Option<std::time::SystemTime>,
+  progress: &mut dyn FnMut(u64),
+  before_commit: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<u64, String> {
   let parent = target.parent().ok_or("无效文件路径")?;
   fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
   let temp = TempFile(parent.join(format!(".simple-diff-{}.tmp", uuid::Uuid::new_v4())));
@@ -52,6 +64,7 @@ pub fn replace_from_reader_with_metadata(
   }
   file.sync_all().map_err(|e| format!("保存文件失败: {e}"))?;
   drop(file);
+  before_commit()?;
   fs::rename(&temp.0, target).map_err(|e| format!("替换文件失败: {e}"))?;
   #[cfg(unix)]
   {
@@ -93,6 +106,21 @@ pub fn copy_buffered_with_progress(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn destination_change_during_stream_is_preserved_and_temp_is_removed() {
+    let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("target");
+    fs::write(&path, b"original").unwrap();
+    let mut input = &b"sync content"[..];
+    let mut progress = |_| { fs::write(&path, b"external edit").unwrap(); };
+    let mut validate = || if fs::read(&path).unwrap() == b"original" { Ok(()) } else { Err("destination changed".into()) };
+    assert!(replace_from_reader_with_metadata_checked(&path, &mut input, None, None, &mut progress, &mut validate).is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"external edit");
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    fs::remove_dir_all(dir).unwrap();
+  }
 
   #[test]
   fn failed_stream_does_not_truncate_target_or_leave_temporary_file() {

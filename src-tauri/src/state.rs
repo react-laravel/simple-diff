@@ -54,6 +54,13 @@ impl ActiveCompare {
       let Ok(path) = normalize_relative_strict(&entry.relative_path) else {
         continue;
       };
+      if entry.left.as_ref().is_some_and(|file| file.is_symlink)
+        || entry.right.as_ref().is_some_and(|file| file.is_symlink)
+      {
+        l2r.remove(&path);
+        r2l.remove(&path);
+        continue;
+      }
       match entry.state {
         CompareState::LeftOnly => {
           l2r.insert(
@@ -280,6 +287,7 @@ mod tests {
       right_source: local("/r"),
       direction: SyncDirection::LeftToRight,
       entries,
+      plan_id: None,
     }
   }
 

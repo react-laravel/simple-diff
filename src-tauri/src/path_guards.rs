@@ -2,7 +2,10 @@ use crate::path_utils::{join_path, normalize_relative};
 use crate::types::SourceConfig;
 
 /// Resolve a path that must stay under the source root (local or SFTP).
-pub fn resolve_allowed_source_path(source: &SourceConfig, file_path: &str) -> Result<String, String> {
+pub fn resolve_allowed_source_path(
+  source: &SourceConfig,
+  file_path: &str,
+) -> Result<String, String> {
   match source {
     SourceConfig::Local { path } => resolve_allowed_local(path, file_path),
     SourceConfig::Sftp { path, .. } => resolve_allowed_remote(path, file_path),
@@ -10,46 +13,17 @@ pub fn resolve_allowed_source_path(source: &SourceConfig, file_path: &str) -> Re
 }
 
 pub fn resolve_allowed_local(root: &str, file_path: &str) -> Result<String, String> {
-  use std::path::{Component, Path, PathBuf};
-
-  let source_root = PathBuf::from(root)
-    .canonicalize()
-    .unwrap_or_else(|_| PathBuf::from(root));
-  let input = if Path::new(file_path).is_absolute() {
-    PathBuf::from(file_path)
-  } else {
-    source_root.join(file_path)
-  };
-
-  // Normalize without requiring existence
-  let mut normalized = PathBuf::new();
-  for component in input.components() {
-    match component {
-      Component::ParentDir => {
-        if !normalized.pop() {
-          return Err("文件路径超出允许范围".into());
-        }
-      }
-      Component::CurDir => {}
-      other => normalized.push(other),
-    }
-  }
-
-  let relative = normalized
-    .strip_prefix(&source_root)
-    .map_err(|_| "文件路径超出允许范围".to_string())?;
-  if relative
-    .components()
-    .any(|c| matches!(c, Component::ParentDir))
-  {
-    return Err("文件路径超出允许范围".into());
-  }
-
-  Ok(normalized.to_string_lossy().replace('\\', "/"))
+  let source = SourceConfig::Local { path: root.into() };
+  crate::files::resolve_local_abs(&source, file_path)
+    .map(|path| path.to_string_lossy().replace('\\', "/"))
 }
 
 pub fn resolve_allowed_remote(root: &str, file_path: &str) -> Result<String, String> {
   let source_root = posix_resolve(if root.is_empty() { "/" } else { root });
+  if !source_root.starts_with('/') {
+    return Err("远程根目录必须是绝对路径".into());
+  }
+  crate::path_utils::normalize_relative_safe(file_path)?;
   let normalized_input = file_path.replace('\\', "/");
   let resolved = if normalized_input.starts_with('/') {
     posix_resolve(&normalized_input)
@@ -68,7 +42,11 @@ pub fn resolve_allowed_remote(root: &str, file_path: &str) -> Result<String, Str
 pub fn relative_under_source(source: &SourceConfig, file_path: &str) -> Result<String, String> {
   let abs = resolve_allowed_source_path(source, file_path)?;
   let root = match source {
-    SourceConfig::Local { path } => path.trim_end_matches(['/', '\\']).replace('\\', "/"),
+    SourceConfig::Local { path } => std::path::PathBuf::from(path)
+      .canonicalize()
+      .map_err(|e| format!("无法解析路径: {e}"))?
+      .to_string_lossy()
+      .replace('\\', "/"),
     SourceConfig::Sftp { path, .. } => {
       let r = if path.is_empty() { "/" } else { path };
       posix_resolve(r)
@@ -90,7 +68,7 @@ pub fn relative_under_source(source: &SourceConfig, file_path: &str) -> Result<S
   Ok(rel)
 }
 
-fn posix_resolve(path: &str) -> String {
+pub fn posix_resolve(path: &str) -> String {
   let absolute = path.starts_with('/');
   let mut parts: Vec<&str> = Vec::new();
   for part in path.split('/') {
@@ -143,6 +121,24 @@ mod tests {
     };
     assert!(resolve_allowed_source_path(&source, "/home/user/../etc/passwd").is_err());
     assert!(resolve_allowed_source_path(&source, "../etc").is_err());
+  }
+
+  #[test]
+  fn sftp_absolute_paths_are_never_reinterpreted_as_relative_children() {
+    let source = SourceConfig::Sftp {
+      config_id: "x".into(),
+      path: "/var/www".into(),
+    };
+    for path in [
+      "/var",
+      "/var/www2",
+      "/var/www/../etc",
+      "/var/www/a/../../etc",
+    ] {
+      assert!(relative_under_source(&source, path).is_err(), "{path}");
+    }
+    assert_eq!(relative_under_source(&source, "/var/www/").unwrap(), "");
+    assert_eq!(relative_under_source(&source, "images").unwrap(), "images");
   }
 
   #[test]

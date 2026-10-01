@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use tauri::{AppHandle, Emitter};
 
-use crate::files::{file_quick_hash, file_sha256};
-use crate::path_utils::{join_path, matches_path_filter, normalize_relative};
+use crate::files::{
+  file_quick_hash_cancel, file_sha256_cancel, resolve_local_abs, resolve_local_path,
+};
+use crate::path_utils::{matches_path_filter, normalize_relative, normalize_relative_safe};
 use crate::source_ops::SourceSession;
 use crate::state::ActiveCompare;
 use crate::types::{
@@ -77,13 +79,54 @@ fn throw_if_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
   }
 }
 
-fn fingerprint_matches(cache: &CompareCacheEntry, left: &FileEntry, right: &FileEntry) -> bool {
-  cache.left.is_directory == left.is_directory
-    && cache.right.is_directory == right.is_directory
-    && cache.left.size == left.size
-    && cache.right.size == right.size
-    && cache.left.mtime == left.mtime
-    && cache.right.mtime == right.mtime
+fn compare_files(
+  left: &FileEntry,
+  right: &FileEntry,
+  strategies: &[StrategyName],
+  mut hash: impl FnMut(bool, bool) -> Result<String, String>,
+) -> Result<(CompareState, Vec<DiffReason>), String> {
+  let mut reasons = Vec::new();
+  for strategy in strategies {
+    match strategy {
+      StrategyName::Size if left.size != right.size => reasons.push(DiffReason::Size {
+        left_size: left.size,
+        right_size: right.size,
+      }),
+      StrategyName::Mtime if left.mtime.abs_diff(right.mtime) > 2000 => {
+        reasons.push(DiffReason::Mtime {
+          left_mtime: left.mtime,
+          right_mtime: right.mtime,
+        })
+      }
+      StrategyName::QuickHash | StrategyName::Hash => {
+        let quick = *strategy == StrategyName::QuickHash;
+        let left_hash = hash(true, quick)?;
+        let right_hash = hash(false, quick)?;
+        if left_hash != right_hash {
+          reasons.push(if quick {
+            DiffReason::QuickHash {
+              left_hash,
+              right_hash,
+            }
+          } else {
+            DiffReason::Hash {
+              left_hash,
+              right_hash,
+            }
+          });
+        }
+      }
+      _ => {}
+    }
+  }
+  Ok((
+    if reasons.is_empty() {
+      CompareState::Equal
+    } else {
+      CompareState::Different
+    },
+    reasons,
+  ))
 }
 
 fn compare_local_files(
@@ -92,60 +135,41 @@ fn compare_local_files(
   left: &FileEntry,
   right: &FileEntry,
   strategies: &[StrategyName],
+  cancelled: Option<&AtomicBool>,
 ) -> Result<(CompareState, Vec<DiffReason>), String> {
-  use std::path::Path;
-
-  for strategy in strategies {
-    match strategy {
-      StrategyName::Size if left.size != right.size => {
-        return Ok((
-          CompareState::Different,
-          vec![DiffReason::Size {
-            left_size: left.size,
-            right_size: right.size,
-          }],
-        ));
-      }
-      StrategyName::Mtime if left.mtime.abs_diff(right.mtime) > 1000 => {
-        return Ok((
-          CompareState::Different,
-          vec![DiffReason::Mtime {
-            left_mtime: left.mtime,
-            right_mtime: right.mtime,
-          }],
-        ));
-      }
-      StrategyName::QuickHash => {
-        let left_hash = file_quick_hash(Path::new(&join_path(left_root, &left.path)))?;
-        let right_hash = file_quick_hash(Path::new(&join_path(right_root, &right.path)))?;
-        if left_hash != right_hash {
-          return Ok((
-            CompareState::Different,
-            vec![DiffReason::QuickHash {
-              left_hash,
-              right_hash,
-            }],
-          ));
-        }
-      }
-      StrategyName::Hash => {
-        let left_hash = file_sha256(Path::new(&join_path(left_root, &left.path)))?;
-        let right_hash = file_sha256(Path::new(&join_path(right_root, &right.path)))?;
-        if left_hash != right_hash {
-          return Ok((
-            CompareState::Different,
-            vec![DiffReason::Hash {
-              left_hash,
-              right_hash,
-            }],
-          ));
-        }
-      }
-      _ => {}
+  compare_files(left, right, strategies, |is_left, quick| {
+    if let Some(flag) = cancelled {
+      throw_if_cancelled(flag)?;
     }
-  }
+    let (root, entry) = if is_left {
+      (left_root, left)
+    } else {
+      (right_root, right)
+    };
+    let source = SourceConfig::Local { path: root.into() };
+    if entry.is_symlink {
+      use sha2::Digest;
+      let target = std::fs::read_link(resolve_local_path(&source, &entry.path, true)?)
+        .map_err(|e| format!("读取符号链接失败: {e}"))?;
+      return Ok(hex::encode(sha2::Sha256::digest(
+        target.to_string_lossy().as_bytes(),
+      )));
+    }
+    let path = resolve_local_abs(&source, &entry.path)?;
+    if quick {
+      file_quick_hash_cancel(&path, cancelled)
+    } else {
+      file_sha256_cancel(&path, cancelled)
+    }
+  })
+}
 
-  Ok((CompareState::Equal, Vec::new()))
+fn parallel_hash_pair(
+  left: impl FnOnce() -> Result<String, String> + Send,
+  right: impl FnOnce() -> Result<String, String> + Send,
+) -> Result<(String, String), String> {
+  let (left_hash, right_hash) = rayon::join(left, right);
+  Ok((left_hash?, right_hash?))
 }
 
 fn compare_file_with_sessions(
@@ -154,58 +178,52 @@ fn compare_file_with_sessions(
   left: &FileEntry,
   right: &FileEntry,
   strategies: &[StrategyName],
+  cancelled: Option<&AtomicBool>,
 ) -> Result<(CompareState, Vec<DiffReason>), String> {
-  for strategy in strategies {
-    match strategy {
-      StrategyName::Size if left.size != right.size => {
-        return Ok((
-          CompareState::Different,
-          vec![DiffReason::Size {
-            left_size: left.size,
-            right_size: right.size,
-          }],
-        ));
-      }
-      StrategyName::Mtime if left.mtime.abs_diff(right.mtime) > 1000 => {
-        return Ok((
-          CompareState::Different,
-          vec![DiffReason::Mtime {
-            left_mtime: left.mtime,
-            right_mtime: right.mtime,
-          }],
-        ));
-      }
-      StrategyName::QuickHash => {
-        let left_hash = left_session.quick_hash(&left.path)?;
-        let right_hash = right_session.quick_hash(&right.path)?;
-        if left_hash != right_hash {
-          return Ok((
-            CompareState::Different,
-            vec![DiffReason::QuickHash {
-              left_hash,
-              right_hash,
-            }],
-          ));
-        }
-      }
-      StrategyName::Hash => {
-        let left_hash = left_session.hash(&left.path)?;
-        let right_hash = right_session.hash(&right.path)?;
-        if left_hash != right_hash {
-          return Ok((
-            CompareState::Different,
-            vec![DiffReason::Hash {
-              left_hash,
-              right_hash,
-            }],
-          ));
-        }
-      }
-      _ => {}
+  // The two sessions already own independent connections. Read both sides of
+  // a selected hash strategy together, and reuse that pair for the callback.
+  let mut quick_pair = None;
+  let mut full_pair = None;
+  compare_files(left, right, strategies, |is_left, quick| {
+    if let Some(flag) = cancelled {
+      throw_if_cancelled(flag)?;
     }
-  }
+    let pair = if quick {
+      &mut quick_pair
+    } else {
+      &mut full_pair
+    };
+    if pair.is_none() {
+      let hash = |session: &SourceSession<'_>, entry: &FileEntry| {
+        if let Some(flag) = cancelled {
+          throw_if_cancelled(flag)?;
+        }
+        if entry.is_symlink {
+          session.link_hash(&entry.path)
+        } else if quick {
+          session.quick_hash_cancel(&entry.path, cancelled)
+        } else {
+          session.hash_cancel(&entry.path, cancelled)
+        }
+      };
+      *pair = Some(parallel_hash_pair(
+        || hash(left_session, left),
+        || hash(right_session, right),
+      )?);
+    }
+    let (left_hash, right_hash) = pair.as_ref().ok_or("未读取哈希")?;
+    Ok(if is_left { left_hash } else { right_hash }.clone())
+  })
+}
 
-  Ok((CompareState::Equal, Vec::new()))
+fn entry_type(entry: &FileEntry) -> &'static str {
+  if entry.is_symlink {
+    "symlink"
+  } else if entry.is_directory {
+    "directory"
+  } else {
+    "file"
+  }
 }
 
 fn match_level(
@@ -213,7 +231,7 @@ fn match_level(
   right_list: &[FileEntry],
   parent_relative: &str,
   path_filters: &[String],
-  reusable: &HashMap<String, CompareCacheEntry>,
+  _reusable: &HashMap<String, CompareCacheEntry>,
 ) -> Vec<CompareEntry> {
   let mut left_map: HashMap<String, FileEntry> = HashMap::new();
   for entry in left_list {
@@ -273,7 +291,20 @@ fn match_level(
         reasons: Vec::new(),
       });
     } else if let (Some(left), Some(right)) = (left, right) {
-      if is_dir {
+      if entry_type(left) != entry_type(right) {
+        entries.push(CompareEntry {
+          relative_path,
+          name,
+          is_directory: false,
+          state: CompareState::Different,
+          left: Some(left.clone()),
+          right: Some(right.clone()),
+          reasons: vec![DiffReason::Type {
+            left_type: entry_type(left).into(),
+            right_type: entry_type(right).into(),
+          }],
+        });
+      } else if is_dir {
         entries.push(CompareEntry {
           relative_path,
           name,
@@ -283,30 +314,6 @@ fn match_level(
           right: Some(right.clone()),
           reasons: Vec::new(),
         });
-      } else if let Some(cache) = reusable.get(&relative_path) {
-        if fingerprint_matches(cache, left, right)
-          && matches!(cache.state, CompareState::Equal | CompareState::Different)
-        {
-          entries.push(CompareEntry {
-            relative_path,
-            name,
-            is_directory: false,
-            state: cache.state.clone(),
-            left: Some(left.clone()),
-            right: Some(right.clone()),
-            reasons: cache.reasons.clone(),
-          });
-        } else {
-          entries.push(CompareEntry {
-            relative_path,
-            name,
-            is_directory: false,
-            state: CompareState::Pending,
-            left: Some(left.clone()),
-            right: Some(right.clone()),
-            reasons: Vec::new(),
-          });
-        }
       } else {
         entries.push(CompareEntry {
           relative_path,
@@ -348,7 +355,7 @@ pub fn compare_directories(
   relative_roots: &[String],
   strategies: &[StrategyName],
   extension_filter: Option<&[String]>,
-  previous_entries: Option<&[CompareCacheEntry]>,
+  _previous_entries: Option<&[CompareCacheEntry]>,
   retain_entries: bool,
   callbacks: Option<&CompareCallbacks<'_>>,
 ) -> Result<CompareResult, String> {
@@ -358,12 +365,9 @@ pub fn compare_directories(
   let both_local = left.is_local() && right.is_local();
   let list_concurrency = if both_local { 8usize } else { 2usize };
 
-  let mut reusable: HashMap<String, CompareCacheEntry> = HashMap::new();
-  if let Some(prev) = previous_entries {
-    for entry in prev {
-      reusable.insert(entry.relative_path.clone(), entry.clone());
-    }
-  }
+  // Frontend cache entries have no source or strategy identity and therefore
+  // cannot prove results for this run. Recompute all selected strategies.
+  let reusable: HashMap<String, CompareCacheEntry> = HashMap::new();
 
   let started = Instant::now();
   let mut stats = CompareStats::default();
@@ -374,8 +378,8 @@ pub fn compare_directories(
   } else {
     relative_roots
       .iter()
-      .map(|root| normalize_relative(root))
-      .collect()
+      .map(|root| normalize_relative_safe(root))
+      .collect::<Result<Vec<_>, _>>()?
   };
 
   let mut current_level: Vec<PendingDirectoryScan> = roots
@@ -396,26 +400,36 @@ pub fn compare_directories(
       if let Some(cb) = callbacks {
         throw_if_cancelled(&cb.cancelled)?;
       }
-      for scan in chunk {
-        let left_list = if scan.rel.is_empty() {
-          left_session
-            .list(&scan.rel)
-            .map_err(|e| format!("读取左侧根目录失败: {e}"))?
-        } else {
-          left_session
-            .list(&scan.rel)
-            .map_err(|e| format!("读取左侧目录 {} 失败: {e}", scan.rel))?
-        };
-        let right_list = if scan.rel.is_empty() {
-          right_session
-            .list(&scan.rel)
-            .map_err(|e| format!("读取右侧根目录失败: {e}"))?
-        } else {
-          right_session
-            .list(&scan.rel)
-            .map_err(|e| format!("读取右侧目录 {} 失败: {e}", scan.rel))?
-        };
-        let matched = match_level(&left_list, &right_list, &scan.rel, &path_filters, &reusable);
+      let list_scan = |scan: &PendingDirectoryScan| -> Result<Vec<CompareEntry>, String> {
+        if let Some(cb) = callbacks {
+          throw_if_cancelled(&cb.cancelled)?;
+        }
+        let (left_list, right_list) = rayon::join(
+          || {
+            left_session
+              .list(&scan.rel)
+              .map_err(|e| format!("读取左侧目录 {} 失败: {e}", scan.rel))
+          },
+          || {
+            right_session
+              .list(&scan.rel)
+              .map_err(|e| format!("读取右侧目录 {} 失败: {e}", scan.rel))
+          },
+        );
+        Ok(match_level(
+          &left_list?,
+          &right_list?,
+          &scan.rel,
+          &path_filters,
+          &reusable,
+        ))
+      };
+      let listed: Result<Vec<_>, String> = if both_local {
+        chunk.par_iter().map(list_scan).collect()
+      } else {
+        chunk.iter().map(list_scan).collect()
+      };
+      for matched in listed? {
         level_entries.extend(matched);
       }
     }
@@ -503,8 +517,14 @@ pub fn compare_directories(
         .map(|entry| {
           let left_fe = entry.left.as_ref().ok_or("缺少左侧文件")?;
           let right_fe = entry.right.as_ref().ok_or("缺少右侧文件")?;
-          let (state, reasons) =
-            compare_local_files(&left_root, &right_root, left_fe, right_fe, &strategies)?;
+          let (state, reasons) = compare_local_files(
+            &left_root,
+            &right_root,
+            left_fe,
+            right_fe,
+            &strategies,
+            callbacks.map(|cb| cb.cancelled.as_ref()),
+          )?;
           Ok((entry.relative_path.clone(), state, reasons))
         })
         .collect();
@@ -536,8 +556,14 @@ pub fn compare_directories(
           throw_if_cancelled(&cb.cancelled)?;
         }
         if let (Some(left_fe), Some(right_fe)) = (&entry.left, &entry.right) {
-          let (state, reasons) =
-            compare_file_with_sessions(&left_session, &right_session, left_fe, right_fe, strategies)?;
+          let (state, reasons) = compare_file_with_sessions(
+            &left_session,
+            &right_session,
+            left_fe,
+            right_fe,
+            strategies,
+            callbacks.map(|cb| cb.cancelled.as_ref()),
+          )?;
           entry.state = state;
           entry.reasons = reasons;
         }
@@ -578,22 +604,30 @@ mod tests {
       name: name.into(),
       path: name.into(),
       is_directory,
+      is_symlink: false,
       size,
       mtime,
     }
   }
 
-  fn cache_entry(relative_path: &str, state: CompareState, size: u64, mtime: u64) -> CompareCacheEntry {
+  fn cache_entry(
+    relative_path: &str,
+    state: CompareState,
+    size: u64,
+    mtime: u64,
+  ) -> CompareCacheEntry {
     CompareCacheEntry {
       relative_path: relative_path.into(),
       state,
       left: CompareFileFingerprint {
         is_directory: false,
+        is_symlink: false,
         size,
         mtime,
       },
       right: CompareFileFingerprint {
         is_directory: false,
+        is_symlink: false,
         size,
         mtime,
       },
@@ -602,9 +636,93 @@ mod tests {
   }
 
   #[test]
+  fn hash_pair_reads_both_sides_concurrently() {
+    let pool = rayon::ThreadPoolBuilder::new()
+      .num_threads(2)
+      .build()
+      .unwrap();
+    let (left_started, wait_left) = std::sync::mpsc::channel();
+    let (right_started, wait_right) = std::sync::mpsc::channel();
+    let hashes = pool
+      .install(move || {
+        parallel_hash_pair(
+          move || {
+            left_started.send(()).unwrap();
+            wait_right
+              .recv_timeout(Duration::from_secs(2))
+              .map_err(|_| "right hash did not start concurrently".to_string())?;
+            Ok("left".into())
+          },
+          move || {
+            wait_left
+              .recv_timeout(Duration::from_secs(2))
+              .map_err(|_| "left hash did not start".to_string())?;
+            right_started.send(()).unwrap();
+            Ok("right".into())
+          },
+        )
+      })
+      .unwrap();
+    assert_eq!(hashes, ("left".into(), "right".into()));
+  }
+
+  #[test]
+  fn compare_collects_every_selected_reason_with_two_second_tolerance() {
+    let left = fe("a", false, 1, 1000);
+    let right = fe("a", false, 2, 3001);
+    let mut calls = 0;
+    let (_, reasons) = compare_files(
+      &left,
+      &right,
+      &[
+        StrategyName::Size,
+        StrategyName::Mtime,
+        StrategyName::QuickHash,
+        StrategyName::Hash,
+      ],
+      |is_left, _| {
+        calls += 1;
+        Ok(if is_left { "left" } else { "right" }.into())
+      },
+    )
+    .unwrap();
+    assert_eq!(reasons.len(), 4);
+    assert_eq!(calls, 4);
+    let within = fe("a", false, 1, 3000);
+    assert_eq!(
+      compare_files(
+        &left,
+        &within,
+        &[StrategyName::Mtime],
+        |_, _| unreachable!()
+      )
+      .unwrap()
+      .0,
+      CompareState::Equal
+    );
+  }
+
+  #[test]
+  fn type_mismatches_are_not_descended_or_reused() {
+    let mut link = fe("a", false, 0, 0);
+    link.is_symlink = true;
+    let directory = fe("a", true, 0, 0);
+    let entries = match_level(&[directory], &[link], "", &[], &HashMap::new());
+    assert!(!entries[0].is_directory);
+    assert_eq!(entries[0].state, CompareState::Different);
+    assert!(matches!(entries[0].reasons[0], DiffReason::Type { .. }));
+  }
+
+  #[test]
   fn match_level_marks_one_sided_entries() {
-    let left = vec![fe("only-left.txt", false, 1, 1), fe("both.txt", false, 1, 1)];
-    let right = vec![fe("only-right.txt", false, 1, 1), fe("both.txt", false, 2, 1)];
+    let left = vec![
+      fe("only-left.txt", false, 1, 1),
+      fe("both.txt", false, 1, 1),
+    ];
+    let right = vec![
+      fe("only-right.txt", false, 1, 1),
+      fe("both.txt", false, 2, 1),
+    ];
     let entries = match_level(&left, &right, "", &[], &HashMap::new());
 
     assert_eq!(entries.len(), 3);
@@ -632,7 +750,7 @@ mod tests {
   }
 
   #[test]
-  fn match_level_reuses_cache_when_fingerprint_matches() {
+  fn match_level_ignores_unverified_cached_results_even_when_metadata_matches() {
     let left = vec![fe("a.txt", false, 5, 100)];
     let right = vec![fe("a.txt", false, 5, 100)];
     let mut reusable = HashMap::new();
@@ -643,7 +761,7 @@ mod tests {
     let entries = match_level(&left, &right, "", &[], &reusable);
 
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].state, CompareState::Equal);
+    assert_eq!(entries[0].state, CompareState::Pending);
   }
 
   #[test]

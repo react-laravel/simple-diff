@@ -1,5 +1,5 @@
 import { trimTrailingSeparators } from '@shared/source-path'
-import type { CompareEntry, ComparePartialRequest, CompareResult, IpcResult, SourceConfig } from '@shared/types'
+import type { CompareEntry, ComparePartialRequest, CompareResult, IpcResult, SourceConfig, StrategyName } from '@shared/types'
 import { entryEmitter, mockLog, scanEmitter } from './mock-bus'
 import { MOCK_LEFT_SOURCE, MOCK_RIGHT_SOURCE, type MockSide } from './mock-fixtures'
 import { createMockCompareEntries, summarizeMockEntries } from './mock-tree'
@@ -93,8 +93,8 @@ function toScanEntry(entry: CompareEntry): CompareEntry {
   return isScanResolvable(entry) ? { ...entry, state: 'pending', reasons: [] } : entry
 }
 
-export async function runMockCompare(compareId: string): Promise<IpcResult<CompareResult>> {
-  const entries = createMockCompareEntries()
+export async function runMockCompare(compareId: string, strategies: readonly StrategyName[] = ['size', 'mtime']): Promise<IpcResult<CompareResult>> {
+  const entries = createMockCompareEntries(strategies)
   const resolvable = entries.filter(isScanResolvable)
   const controller = createRunController()
   const startedAt = Date.now()
@@ -142,7 +142,7 @@ export async function runMockPartialCompare(
   setMockCompareSources(request.left, request.right)
   await new Promise<void>((resolve) => setTimeout(resolve, SCAN_DELAY_MS))
 
-  const entries = createMockCompareEntries().filter((entry) =>
+  const entries = createMockCompareEntries(request.strategies).filter((entry) =>
     request.relativeRoots.some((root) =>
       root === '' || entry.relativePath === root || entry.relativePath.startsWith(`${root}/`)))
 

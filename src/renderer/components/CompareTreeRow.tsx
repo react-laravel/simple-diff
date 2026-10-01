@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { File, Folder, Loader2 } from 'lucide-react'
+import { Check, File, Folder, Link2, Loader2, X } from 'lucide-react'
 import type { TreeNode } from '../utils/tree-utils'
 import StatusBadge from './StatusBadge'
 import {
@@ -9,7 +9,7 @@ import {
   rowBg,
   shouldShowDirectorySpinner,
 } from './tree-row-utils'
-import { DiffGutter, TreeRow, type MenuItem } from './ui'
+import { DiffGutter, IconButton, TreeRow, type MenuItem } from './ui'
 import { cn } from '../lib/utils'
 
 export type CompareRowSide = 'left' | 'right' | 'merged'
@@ -89,48 +89,71 @@ function CompareTreeRowImpl({
   const missingOnSide = side === 'left' ? !entry.left : side === 'right' ? !entry.right : false
   if (missingOnSide) {
     return (
-      <div aria-hidden="true" className="h-row-tree border-b border-border bg-inset/40" />
+      <TreeRow
+        data-tree-index={index}
+        depth={node.depth}
+        setSize={setSize}
+        posInSet={index + 1}
+        label={<span className="font-mono text-xs text-fg-subtle">—</span>}
+        aria-label={`${node.name}，${side === 'left' ? '左侧不存在，仅在右侧' : '右侧不存在，仅在左侧'}`}
+        selected={selected}
+        focused={focused}
+        onSelect={onSelect}
+        onActivate={onActivate}
+        className="border-b border-border bg-inset/40"
+      />
     )
   }
 
+  const isSymlink = side === 'left' ? entry.left?.isSymlink : side === 'right' ? entry.right?.isSymlink : entry.left?.isSymlink || entry.right?.isSymlink
+  const linkDescription = side === 'merged'
+    ? [entry.left?.isSymlink ? '左侧符号链接' : '', entry.right?.isSymlink ? '右侧符号链接' : ''].filter(Boolean).join('，')
+    : isSymlink ? '符号链接' : ''
+  const typeNames = { file: '文件', directory: '目录', symlink: '符号链接' }
+  const typeReason = entry.reasons.find((reason) => reason.type === 'type')
+  const typeDescription = typeReason?.type === 'type' ? `类型不同：左侧${typeNames[typeReason.leftType]}，右侧${typeNames[typeReason.rightType]}` : ''
+  const rowDescription = [node.name, linkDescription, typeDescription].filter(Boolean).join('，')
   const showSpinner = shouldShowDirectorySpinner(entry.isDirectory, loading, entry.state)
   const left = fileMeta(entry.left, entry.isDirectory)
   const right = fileMeta(entry.right, entry.isDirectory)
   const menuItems = buildActions(node)
 
   const label = renaming ? (
-    <input
-      type="text"
-      value={renameValue}
-      autoFocus
-      spellCheck={false}
-      onChange={(event) => onRenameChange?.(event.target.value)}
-      onBlur={() => onRenameSubmit?.()}
-      onClick={(event) => event.stopPropagation()}
-      onDoubleClick={(event) => event.stopPropagation()}
-      onKeyDown={(event) => {
-        // 行本身把 Enter/Space 当作“打开”，重命名输入框必须先把键吃掉。
-        event.stopPropagation()
-        if (event.key === 'Enter') onRenameSubmit?.()
-        if (event.key === 'Escape') onRenameCancel?.()
-      }}
-      data-focus-inset
-      className="w-full min-w-0 rounded-xs border border-border-strong bg-canvas px-1 font-mono text-xs text-fg focus:border-accent"
-    />
+    <span className="flex min-w-0 items-center gap-1" onKeyDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+      <input
+        type="text"
+        aria-label={`重命名 ${node.name}`}
+        value={renameValue}
+        autoFocus
+        spellCheck={false}
+        onChange={(event) => onRenameChange?.(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') { event.preventDefault(); onRenameSubmit?.() }
+          if (event.key === 'Escape') { event.preventDefault(); onRenameCancel?.() }
+        }}
+        data-focus-inset
+        className="w-full min-w-0 flex-1 rounded-xs border border-border-strong bg-canvas px-1 font-mono text-xs text-fg focus:border-accent"
+      />
+      <IconButton size="xs" icon={Check} label={`确认重命名 ${node.name}`} onClick={(event) => { event.stopPropagation(); onRenameSubmit?.() }} />
+      <IconButton size="xs" icon={X} label={`取消重命名 ${node.name}`} onClick={(event) => { event.stopPropagation(); onRenameCancel?.() }} />
+    </span>
   ) : (
-    <span title={node.relativePath} className="truncate font-mono text-xs">{node.name}</span>
+    <span title={[node.relativePath, linkDescription, typeDescription].filter(Boolean).join(' · ')} className="truncate font-mono text-xs">{node.name}{isSymlink ? <span className="ml-1 text-fg-subtle">（链接）</span> : null}</span>
   )
 
   return (
     <TreeRow
       data-tree-index={index}
+      aria-label={linkDescription || typeDescription ? rowDescription : undefined}
+      title={typeDescription || undefined}
       depth={node.depth}
       setSize={setSize}
       posInSet={index + 1}
       label={label}
-      icon={showSpinner ? Loader2 : node.isDirectory ? Folder : File}
+      icon={showSpinner ? Loader2 : isSymlink ? Link2 : node.isDirectory ? Folder : File}
       iconTone={showSpinner ? 'running' : node.isDirectory ? 'accent' : 'neutral'}
-      expandable={node.isDirectory}
+      expandable={node.isDirectory && !isSymlink}
       expanded={expanded}
       onToggle={onToggle}
       selected={selected}

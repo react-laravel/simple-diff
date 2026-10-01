@@ -83,8 +83,9 @@ export function useSelectionSync(): SelectionSync {
       compareId: compareSessionId,
       entries: syncEntries,
     }
-    if (!await confirmSync(request)) return
-    const response = await reportSyncResult(() => window.api.startSync(request))
+    const prepared = await confirmSync(request)
+    if (!prepared) return
+    const response = await reportSyncResult(() => window.api.startSync(prepared))
 
     if (response.success) {
       if (useCompareStore.getState().compareSessionId === compareSessionId) useCompareStore.getState().markDirtyPaths(Array.from(paths))

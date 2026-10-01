@@ -21,7 +21,7 @@ use crate::sync::sync_manager;
 use crate::types::{
   CompareHistoryEntry, CompareLocalWatchRequest, ComparePartialRequest, CompareRequest,
   CompareResult, FileEntry, IpcResult, LogEntry, SourceConfig, SshConfig, SshConfigInput,
-  StartSyncRequest, SyncTaskSnapshot,
+  StartSyncRequest, SyncPlanPreview, SyncTaskSnapshot,
 };
 
 #[tauri::command]
@@ -327,6 +327,30 @@ pub fn history_delete(app: AppHandle, id: String) -> IpcResult<()> {
 }
 
 #[tauri::command]
+pub async fn sync_prepare(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  mut request: StartSyncRequest,
+) -> Result<IpcResult<SyncPlanPreview>, String> {
+  request.entries = match state.assert_sync_entries(&request) {
+    Ok(entries) => entries,
+    Err(err) => return Ok(IpcResult::err(err)),
+  };
+  tauri::async_runtime::spawn_blocking(move || match sync_manager().prepare(&app, request) {
+    Ok(plan) => IpcResult::ok(plan),
+    Err(err) => IpcResult::err(err),
+  }).await.map_err(|err| format!("同步预检失败: {err}"))
+}
+
+#[tauri::command]
+pub async fn sync_prepare_resume(app: AppHandle) -> Result<IpcResult<SyncPlanPreview>, String> {
+  tauri::async_runtime::spawn_blocking(move || match sync_manager().prepare_resume(&app) {
+    Ok(plan) => IpcResult::ok(plan),
+    Err(err) => IpcResult::err(err),
+  }).await.map_err(|err| format!("继续同步预检失败: {err}"))
+}
+
+#[tauri::command]
 pub async fn sync_start(
   app: AppHandle,
   state: State<'_, AppState>,
@@ -352,8 +376,8 @@ pub fn sync_pause(app: AppHandle) -> IpcResult<Option<SyncTaskSnapshot>> {
 }
 
 #[tauri::command]
-pub fn sync_resume(app: AppHandle) -> IpcResult<Option<SyncTaskSnapshot>> {
-  match sync_manager().resume(app) {
+pub fn sync_resume(app: AppHandle, plan_id: Option<String>) -> IpcResult<Option<SyncTaskSnapshot>> {
+  match sync_manager().resume(app, plan_id) {
     Ok(task) => IpcResult::ok(task),
     Err(err) => IpcResult::err(err),
   }
@@ -414,7 +438,7 @@ pub async fn ssh_browse(
   app: AppHandle,
   config_id: String,
   dir_path: String,
-) -> Result<IpcResult<Vec<FileEntry>>, String> {
+) -> Result<IpcResult<crate::types::SshBrowseResult>, String> {
   tauri::async_runtime::spawn_blocking(move || {
     let listing = (|| {
       let config = ssh_store::get_internal(&app, &config_id)?;
@@ -423,18 +447,7 @@ pub async fn ssh_browse(
         .clone()
         .unwrap_or_else(|| "/".to_string());
       let session = connect_session(&config)?;
-      // dir_path may be absolute under remote root or relative
-      let relative = if dir_path.is_empty() || dir_path == root {
-        String::new()
-      } else if let Some(rest) = dir_path
-        .trim_end_matches('/')
-        .strip_prefix(root.trim_end_matches('/'))
-      {
-        rest.trim_start_matches('/').to_string()
-      } else {
-        dir_path.trim_start_matches('/').to_string()
-      };
-      ssh::list_remote(&session, &root, &relative)
+      ssh::browse_remote(&session, &root, &dir_path)
     })();
     match listing {
       Ok(entries) => IpcResult::ok(entries),

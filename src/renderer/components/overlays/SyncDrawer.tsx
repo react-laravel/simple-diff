@@ -199,7 +199,7 @@ export default function SyncDrawer({ open, onOpenChange }: SyncDrawerProps) {
                   <Button size="sm" icon={Pause} onClick={() => void pause()}>暂停</Button>
                 ) : null}
                 {syncTask.status === 'paused' || syncTask.status === 'failed' ? (
-                  <Button size="sm" variant="primary" icon={Play} onClick={() => void resume()}>继续</Button>
+                  <Button size="sm" variant="primary" icon={Play} disabled={syncTask.status === 'paused' && Boolean(syncTask.currentPath)} onClick={() => void resume()}>继续</Button>
                 ) : null}
                 <Button
                   size="sm"

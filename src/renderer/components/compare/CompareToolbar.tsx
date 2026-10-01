@@ -133,7 +133,7 @@ export default function CompareToolbar() {
       id: 'sync-resume',
       label: '继续同步',
       icon: Play,
-      disabled: visibleSyncTask?.status !== 'paused' && visibleSyncTask?.status !== 'failed',
+      disabled: (visibleSyncTask?.status !== 'paused' && visibleSyncTask?.status !== 'failed') || (visibleSyncTask.status === 'paused' && Boolean(visibleSyncTask.currentPath)),
       onSelect: () => void sync.resume(),
     },
     {
@@ -150,7 +150,7 @@ export default function CompareToolbar() {
   const syncPrimary = visibleSyncTask?.status === 'running'
     ? { label: '暂停同步', icon: Pause, disabled: false, onClick: () => void sync.pause() }
     : visibleSyncTask?.status === 'paused' || visibleSyncTask?.status === 'failed'
-      ? { label: '继续同步', icon: Play, disabled: false, onClick: () => void sync.resume() }
+      ? { label: '继续同步', icon: Play, disabled: visibleSyncTask.status === 'paused' && Boolean(visibleSyncTask.currentPath), onClick: () => void sync.resume() }
       : {
           label: '同步到右',
           icon: ArrowRight,

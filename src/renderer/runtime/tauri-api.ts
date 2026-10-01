@@ -17,7 +17,9 @@ import type {
   SourceConfig,
   SSHConfig,
   SSHConfigInput,
+  SSHBrowseResult,
   StartSyncRequest,
+  SyncPlanPreview,
   SyncTaskSnapshot,
 } from '@shared/types'
 
@@ -158,11 +160,17 @@ export const tauriApi: AppAPI = {
   startSync: (request: StartSyncRequest) =>
     wrap(() => invoke<IpcResult<SyncTaskSnapshot>>('sync_start', { request })),
 
+  prepareSync: (request: StartSyncRequest) =>
+    wrap(() => invoke<IpcResult<SyncPlanPreview>>('sync_prepare', { request })),
+
+  prepareSyncResume: () =>
+    wrap(() => invoke<IpcResult<SyncPlanPreview>>('sync_prepare_resume')),
+
   pauseSync: () =>
     wrap(() => invoke<IpcResult<SyncTaskSnapshot | null>>('sync_pause')),
 
-  resumeSync: () =>
-    wrap(() => invoke<IpcResult<SyncTaskSnapshot | null>>('sync_resume')),
+  resumeSync: (planId?: string) =>
+    wrap(() => invoke<IpcResult<SyncTaskSnapshot | null>>('sync_resume', { planId: planId ?? null })),
 
   getSyncStatus: () =>
     wrap(() => invoke<IpcResult<SyncTaskSnapshot | null>>('sync_get_status')),
@@ -224,7 +232,7 @@ export const tauriApi: AppAPI = {
     wrap(() => invoke<IpcResult<boolean>>('ssh_test', { id })),
 
   browseSSH: (configId: string, dirPath: string) =>
-    wrap(() => invoke<IpcResult<readonly FileEntry[]>>('ssh_browse', { configId, dirPath })),
+    wrap(() => invoke<IpcResult<SSHBrowseResult>>('ssh_browse', { configId, dirPath })),
 
   listHistory: () =>
     wrap(() => invoke<IpcResult<readonly CompareHistoryEntry[]>>('history_list')),

@@ -6,8 +6,18 @@ pub struct FileEntry {
   pub name: String,
   pub path: String,
   pub is_directory: bool,
+  #[serde(default)]
+  pub is_symlink: bool,
   pub size: u64,
   pub mtime: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshBrowseResult {
+  pub path: String,
+  pub root_path: String,
+  pub entries: Vec<FileEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +76,12 @@ pub enum CompareState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DiffReason {
+  Type {
+    #[serde(rename = "leftType")]
+    left_type: String,
+    #[serde(rename = "rightType")]
+    right_type: String,
+  },
   Size {
     #[serde(rename = "leftSize")]
     left_size: u64,
@@ -119,6 +135,8 @@ pub struct CompareEntry {
 #[serde(rename_all = "camelCase")]
 pub struct CompareFileFingerprint {
   pub is_directory: bool,
+  #[serde(default)]
+  pub is_symlink: bool,
   pub size: u64,
   pub mtime: u64,
 }
@@ -306,6 +324,17 @@ pub struct StartSyncRequest {
   pub right_source: SourceConfig,
   pub direction: SyncDirection,
   pub entries: Vec<CompareEntry>,
+  #[serde(default)]
+  pub plan_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPlanPreview {
+  pub plan_id: String,
+  pub files: u64,
+  pub directories: u64,
+  pub overwrites: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,4 +435,3 @@ pub struct SshConfigInternal {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub passphrase: Option<String>,
 }
-

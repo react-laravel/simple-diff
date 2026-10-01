@@ -24,7 +24,9 @@ export function matchChildren(
   for (const name of allNames) {
     const left = leftMap.get(name)
     const right = rightMap.get(name)
-    const isDir = left?.isDirectory ?? right?.isDirectory ?? false
+    const leftType = left?.isSymlink ? 'symlink' : left?.isDirectory ? 'directory' : 'file'
+    const rightType = right?.isSymlink ? 'symlink' : right?.isDirectory ? 'directory' : 'file'
+    const isDir = left ? leftType === 'directory' : rightType === 'directory'
     const relativePath = parentRelative ? `${parentRelative}/${name}` : name
 
     if (left && !right) {
@@ -32,10 +34,15 @@ export function matchChildren(
     } else if (!left && right) {
       entries.push({ relativePath, name, isDirectory: isDir, state: 'right_only', right, reasons: [] })
     } else if (left && right) {
-      if (!isDir) {
+      if (leftType !== rightType) {
+        entries.push({
+          relativePath, name, isDirectory: false, state: 'different', left, right,
+          reasons: [{ type: 'type', leftType, rightType }],
+        })
+      } else if (!isDir) {
         const reasons: ('size' | 'mtime')[] = []
         if (left.size !== right.size) reasons.push('size')
-        if (Math.abs(left.mtime - right.mtime) > 1000) reasons.push('mtime')
+        if (Math.abs(left.mtime - right.mtime) > 2000) reasons.push('mtime')
         const state = reasons.length > 0 ? 'different' : 'equal'
         entries.push({
           relativePath, name, isDirectory: isDir, state,
@@ -73,6 +80,7 @@ export async function loadDirectoryChildren(
   rightSource: SourceConfig | null,
 ): Promise<readonly CompareEntry[]> {
   if (!leftSource && !rightSource) return []
+  if (dirEntry?.left?.isSymlink || dirEntry?.right?.isSymlink) throw new Error('符号链接不可展开')
 
   const leftAbs = leftSource ? resolveAbsPath(leftSource, path) : null
   const rightAbs = rightSource ? resolveAbsPath(rightSource, path) : null

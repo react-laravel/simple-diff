@@ -1,4 +1,4 @@
-import type { StartSyncRequest } from '../../../shared/types'
+import type { StartSyncRequest, SyncPlanPreview } from '../../../shared/types'
 import { create } from 'zustand'
 import type { StatusTone } from '../components/ui'
 import type { CompareSelectionState } from '../utils/compare-selection'
@@ -50,7 +50,7 @@ interface UIStore {
    * 否则总有一条路会绕过它（旧代码走的是 `window.confirm`，§7.5 明令禁止）。
    */
   readonly pendingDiffTabClose: readonly string[] | null
-  readonly pendingSync: { request: StartSyncRequest; resolve: (proceed: boolean) => void } | null
+  readonly pendingSync: { request: Pick<StartSyncRequest, 'leftSource' | 'rightSource' | 'direction'>; preview: SyncPlanPreview; resume: boolean; resolve: (proceed: boolean) => void } | null
   readonly pendingUnsavedChanges: UnsavedChangesRequest | null
   /**
    * 当前视图想说的那一句话，渲染在状态栏的任务槽里（蓝图 §4.5：手动对齐提示

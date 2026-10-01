@@ -47,10 +47,14 @@ export default function SSHConfigForm({ initial, onSave, onCancel }: SSHConfigFo
     e.preventDefault()
     const trimmedHost = host.trim()
     const resolvedLabel = label.trim() || trimmedHost
-    const resolvedUsername = username.trim() || 'root'
+    const resolvedUsername = username.trim()
 
     if (!trimmedHost) {
       setError('请填写主机')
+      return
+    }
+    if (!resolvedUsername) {
+      setError('请填写用户名')
       return
     }
 
@@ -83,18 +87,13 @@ export default function SSHConfigForm({ initial, onSave, onCancel }: SSHConfigFo
         <Field label="标签">
           <Input value={label} placeholder="My Server" onChange={(e) => setLabel(e.target.value)} />
         </Field>
-        {/*
-          主机是唯一必填项——`handleSubmit` 里唯一会拦下提交的就是它。校验信息挂在
-          字段上（§7.5 field 级：`--ds-danger` 边框 + `aria-describedby`），
-          而不是像以前那样堆在表单底部一个和输入框无关的红条里。
-        */}
         <Field label="主机" error={error === '请填写主机' ? error : undefined}>
           <Input value={host} placeholder="192.168.1.100" onChange={(e) => setHost(e.target.value)} />
         </Field>
         <Field label="端口">
           <Input type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} />
         </Field>
-        <Field label="用户名">
+        <Field label="用户名" error={error === '请填写用户名' ? error : undefined}>
           <Input value={username} placeholder="root" onChange={(e) => setUsername(e.target.value)} />
         </Field>
       </div>
@@ -142,7 +141,7 @@ export default function SSHConfigForm({ initial, onSave, onCancel }: SSHConfigFo
         <Input value={defaultPath} placeholder="/home/user" onChange={(e) => setDefaultPath(e.target.value)} />
       </Field>
 
-      {error && error !== '请填写主机' && (
+      {error && error !== '请填写主机' && error !== '请填写用户名' && (
         <Panel variant="bordered" role="alert" className="border-danger/40 bg-danger-quiet p-2 text-sm text-danger-text">
           {error}
         </Panel>

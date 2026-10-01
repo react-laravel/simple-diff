@@ -8,6 +8,7 @@ fn install_task(manager: &SyncManager, status: SyncTaskStatus, in_flight: bool) 
     completed_keys: HashSet::new(),
     in_flight,
     pending_updates: HashMap::new(),
+    expected_targets: [(item_key(&file_item("a.txt")), TargetFingerprint::Missing)].into(),
   });
 }
 
@@ -16,16 +17,72 @@ fn resuming_running_and_completed_tasks_is_idempotent_and_releases_lock() {
   let manager = SyncManager::new();
   for status in [SyncTaskStatus::Running, SyncTaskStatus::Completed] {
     install_task(&manager, status.clone(), false);
-    assert!(!manager.resume_state());
+    assert!(!manager.resume_state(None).unwrap());
     assert!(manager.inner.try_lock().is_some());
     assert_eq!(manager.get_snapshot().unwrap().status, status);
   }
   install_task(&manager, SyncTaskStatus::Failed, false);
-  assert!(manager.resume_state());
+  assert!(manager.resume_state(None).is_err());
+  *manager.prepared_resume.lock() = Some(PreparedResume {
+    plan_id: "confirmed".into(), task_id: "task".into(), pending_keys: vec![item_key(&file_item("a.txt"))], prepared_at: Instant::now(),
+  });
+  assert!(manager.resume_state(Some("confirmed")).unwrap());
   assert_eq!(
     manager.get_snapshot().unwrap().status,
     SyncTaskStatus::Running
   );
+}
+
+#[test]
+fn target_content_changes_are_detected_even_if_size_and_mtime_match() {
+  let expected = TargetFingerprint::File { size: 3, mtime: 100, sha256: "old".into() };
+  let changed = TargetFingerprint::File { size: 3, mtime: 100, sha256: "new".into() };
+  assert!(assert_target_unchanged(&expected, &changed, "a.txt").is_err());
+  assert!(assert_target_unchanged(&TargetFingerprint::Missing, &expected, "a.txt").is_err());
+  assert!(assert_target_unchanged(&expected, &TargetFingerprint::Missing, "a.txt").is_err());
+  assert!(assert_target_unchanged(&expected, &expected, "a.txt").is_ok());
+}
+
+#[test]
+fn preview_counts_every_expanded_file_and_actual_overwrite() {
+  let items = vec![dir_item("dir"), dir_item("dir/nested"), file_item("dir/a"), file_item("dir/nested/b")];
+  let expected = [
+    (item_key(&items[0]), TargetFingerprint::Missing),
+    (item_key(&items[1]), TargetFingerprint::Directory),
+    (item_key(&items[2]), TargetFingerprint::File { size: 1, mtime: 1, sha256: "hash".into() }),
+    (item_key(&items[3]), TargetFingerprint::Missing),
+  ].into();
+  let preview = plan_preview("plan".into(), &items, &expected);
+  assert_eq!((preview.files, preview.directories, preview.overwrites), (2, 2, 1));
+}
+
+#[test]
+fn restored_or_changed_queue_cannot_resume_without_new_valid_confirmation() {
+  let manager = SyncManager::new();
+  install_task(&manager, SyncTaskStatus::Paused, false);
+  assert!(manager.resume_state(None).is_err());
+  assert_eq!(manager.get_snapshot().unwrap().status, SyncTaskStatus::Paused);
+  *manager.prepared_resume.lock() = Some(PreparedResume {
+    plan_id: "confirmed".into(), task_id: "task".into(), pending_keys: vec![item_key(&file_item("different.txt"))], prepared_at: Instant::now(),
+  });
+  assert!(manager.resume_state(Some("confirmed")).is_err());
+  assert_eq!(manager.get_snapshot().unwrap().status, SyncTaskStatus::Paused);
+}
+
+#[test]
+fn confirmation_plan_is_bound_to_request_and_cannot_be_reused() {
+  let manager = SyncManager::new();
+  let mut request = StartSyncRequest { compare_id: "compare".into(), left_source: SourceConfig::Local { path: "/l".into() }, right_source: SourceConfig::Local { path: "/r".into() }, direction: SyncDirection::LeftToRight, entries: vec![], plan_id: None };
+  assert!(manager.take_plan(&request).is_err());
+  manager.prepared.lock().insert("plan".into(), PreparedPlan { request: request.clone(), items: vec![], expected_targets: HashMap::new(), prepared_at: Instant::now(), queue: None });
+  request.plan_id = Some("plan".into());
+  assert!(manager.take_plan(&request).is_ok());
+  assert!(manager.take_plan(&request).is_err());
+  let original = request.clone();
+  manager.prepared.lock().insert("changed".into(), PreparedPlan { request: original, items: vec![], expected_targets: HashMap::new(), prepared_at: Instant::now(), queue: None });
+  request.plan_id = Some("changed".into());
+  request.right_source = SourceConfig::Local { path: "/other".into() };
+  assert!(manager.take_plan(&request).is_err());
 }
 
 #[test]

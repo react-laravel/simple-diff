@@ -1,4 +1,4 @@
-import type { CompareEntry, CompareState, CompareStats, DiffReason, FileEntry } from '@shared/types'
+import type { CompareEntry, CompareState, CompareStats, DiffReason, FileEntry, StrategyName } from '@shared/types'
 import { DAY_MS, hashString, NOW, type MockSide } from './mock-fixtures'
 
 /**
@@ -195,43 +195,43 @@ function createFileEntry(node: MockNode, side: MockSide): FileEntry {
   }
 }
 
-function createReasons(node: MockNode, left: FileEntry, right: FileEntry): readonly DiffReason[] {
+function createReasons(node: MockNode, left: FileEntry, right: FileEntry, strategies: readonly StrategyName[]): readonly DiffReason[] {
   if (node.state !== 'different' || node.isDirectory) return []
-
-  const seed = hashString(node.relativePath) % 4
-  if (seed === 0) return [{ type: 'size', leftSize: left.size, rightSize: right.size }]
-  if (seed === 1) return [{ type: 'mtime', leftMtime: left.mtime, rightMtime: right.mtime }]
-  if (seed === 2) {
-    return [{
-      type: 'quick_hash',
-      leftHash: hashString(`${node.relativePath}:left`).toString(16),
-      rightHash: hashString(`${node.relativePath}:right`).toString(16),
-    }]
+  const reasons: DiffReason[] = []
+  for (const strategy of strategies) {
+    if (strategy === 'size' && left.size !== right.size) {
+      reasons.push({ type: 'size', leftSize: left.size, rightSize: right.size })
+    } else if (strategy === 'mtime' && Math.abs(left.mtime - right.mtime) > 2000) {
+      reasons.push({ type: 'mtime', leftMtime: left.mtime, rightMtime: right.mtime })
+    } else if (strategy === 'hash' || strategy === 'quick_hash') {
+      reasons.push({
+        type: strategy,
+        leftHash: hashString(`${node.relativePath}:${strategy}:left`).toString(16).padStart(8, '0'),
+        rightHash: hashString(`${node.relativePath}:${strategy}:right`).toString(16).padStart(8, '0'),
+      })
+    }
   }
-  return [{
-    type: 'hash',
-    leftHash: hashString(`${node.relativePath}:l`).toString(16).padStart(8, '0'),
-    rightHash: hashString(`${node.relativePath}:r`).toString(16).padStart(8, '0'),
-  }]
+  return reasons
 }
 
-function createCompareEntry(node: MockNode): CompareEntry {
+function createCompareEntry(node: MockNode, strategies: readonly StrategyName[]): CompareEntry {
   const left = hasSide(node.state, 'left') ? createFileEntry(node, 'left') : undefined
   const right = hasSide(node.state, 'right') ? createFileEntry(node, 'right') : undefined
+  const reasons = left && right ? createReasons(node, left, right, strategies) : []
 
   return {
     relativePath: node.relativePath,
     name: node.name,
     isDirectory: node.isDirectory,
-    state: node.state,
+    state: node.state === 'different' && !node.isDirectory ? reasons.length > 0 ? 'different' : 'equal' : node.state,
     left,
     right,
-    reasons: left && right ? createReasons(node, left, right) : [],
+    reasons,
   }
 }
 
-export function createMockCompareEntries(): readonly CompareEntry[] {
-  return MOCK_NODES.map(createCompareEntry)
+export function createMockCompareEntries(strategies: readonly StrategyName[] = ['size', 'mtime', 'quick_hash', 'hash']): readonly CompareEntry[] {
+  return MOCK_NODES.map((node) => createCompareEntry(node, strategies))
 }
 
 export function summarizeMockEntries(entries: readonly CompareEntry[]): CompareStats {

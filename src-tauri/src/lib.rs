@@ -10,6 +10,8 @@ mod open_paths;
 mod path_guards;
 mod path_utils;
 mod secret_crypto;
+#[cfg(target_os = "windows")]
+mod private_permissions_windows;
 mod source_ops;
 mod ssh;
 mod ssh_pool;
@@ -67,6 +69,8 @@ pub fn run() {
       commands::history_clear,
       commands::history_delete,
       commands::sync_start,
+      commands::sync_prepare,
+      commands::sync_prepare_resume,
       commands::sync_pause,
       commands::sync_resume,
       commands::sync_get_status,

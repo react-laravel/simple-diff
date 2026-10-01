@@ -8,18 +8,14 @@ export default function SyncConfirmDialog() {
     pending?.resolve(proceed)
   }
   if (!pending) return null
-  const { request } = pending
+  const { request, preview, resume } = pending
   const toRight = request.direction === 'left_to_right'
   const from = toRight ? request.leftSource : request.rightSource
   const to = toRight ? request.rightSource : request.leftSource
-  const eligible = request.entries.filter((entry) => (entry.state === 'different' && !entry.isDirectory)
-    || (toRight ? entry.state === 'left_only' : entry.state === 'right_only'))
-  const directories = eligible.filter((entry) => entry.isDirectory).length
-  const overwrites = eligible.filter((entry) => !entry.isDirectory && entry.left && entry.right).length
   return <ConfirmDialog open onOpenChange={(open) => { if (!open) finish(false) }}
-    title={toRight ? '确认同步到右侧' : '确认同步到左侧'}
-    body={<span>本次范围：{eligible.length - directories} 个文件、{directories} 个目录。已知会覆盖 {overwrites} 个文件。</span>}
+    title={resume ? '确认继续同步' : toRight ? '确认同步到右侧' : '确认同步到左侧'}
+    body={<span>{resume ? '剩余范围' : '本次范围'}：{preview.files} 个文件、{preview.directories} 个目录。会覆盖 {preview.overwrites} 个文件。</span>}
     subject={`${from.type === 'sftp' ? 'SFTP ' : ''}${from.path}\n→ ${to.type === 'sftp' ? 'SFTP ' : ''}${to.path}`}
-    consequence={directories > 0 ? '目录包含其子项，展开后可能还有同名文件需要覆盖。目标侧额外文件会保留。' : '同名文件将被覆盖，目标侧额外文件会保留。'}
-    confirmLabel="确认并同步" onConfirm={() => finish(true)} />
+    consequence="已展开目录并检查目标。目标侧额外文件会保留；目标内容发生变化时会停止覆盖，需重新对比。"
+    confirmLabel={resume ? '确认并继续' : '确认并同步'} onConfirm={() => finish(true)} />
 }
