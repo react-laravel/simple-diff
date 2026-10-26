@@ -1,48 +1,16 @@
-name: Deploy (Self-hosted)
+name: Retired local A publication (disabled)
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
-  deploy:
-    runs-on: self-hosted
+  retired:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Ensure Deployer phar present
+      - name: Refuse the retired publication path
         run: |
-          set -euo pipefail
-          DEP_BIN="$HOME/.deployer/dep.phar"
-          DEP_VERSION="7.5.7"
-          if [ ! -f "$DEP_BIN" ]; then
-            mkdir -p "$(dirname "$DEP_BIN")"
-            curl -fsSL "https://deployer.org/releases/v${DEP_VERSION}/deployer.phar" -o "$DEP_BIN"
-            chmod +x "$DEP_BIN"
-          fi
-          php "$DEP_BIN" --version
-
-      - name: Deploy production
-        env:
-          DEPLOY_PATH: /var/www/simple-diff
-          VERIFY_BASE_URL: https://simple-diff.dogeow.com
-          RUNNER_TRACKING_ID: ""
-        run: php "$HOME/.deployer/dep.phar" deploy production -v
-
-      - name: Notify dogeow deployment
-        if: success()
-        env:
-          APP_NAME: simple-diff
-          APP_URL: https://simple-diff.dogeow.com
-        run: |
-          set -euo pipefail
-          php /var/www/dogeow-api/current/artisan notify:deploy "$APP_NAME" \
-            --title="部署完成：$APP_NAME" \
-            --body="react-laravel/$APP_NAME 已通过 GitHub self-hosted runner 部署成功（${GITHUB_SHA::7}）" \
-            --url="$APP_URL" \
-            --no-interaction || true
+          echo 'This publication path is retired. Use deploy-static-c.yml.' >&2
+          exit 1
