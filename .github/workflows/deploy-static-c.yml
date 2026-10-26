@@ -1,0 +1,87 @@
+name: Static simple-diff to C (GitHub hosted)
+
+on:
+  push:
+    branches: [electron]
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full source commit on electron; initial value is the current website version
+        required: false
+        default: '096638e870ad1baad1df01af18f6d314fdc1b996'
+        type: string
+      validate_only:
+        description: Build the candidate and verify existing C without publishing
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: static-simple-diff-c
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - name: Check out trusted CI infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          path: ci
+          persist-credentials: false
+      - name: Select the immutable website source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: python3 ci/scripts/static-c-ci.py select --site simple-diff
+      - name: Check out the website edition
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ steps.source.outputs.source_revision }}
+          path: source
+          persist-credentials: false
+      - name: Refuse another application edition
+        run: python3 ci/scripts/static-c-ci.py assert-source --site simple-diff --source source
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.16.0
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Verify and build the existing website edition
+        working-directory: source
+        run: |
+          npm ci --ignore-scripts
+          npm run build:web
+      - name: Package static files without source maps or credentials
+        id: package
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.source_revision }}
+        run: python3 ci/scripts/static-c-ci.py package --site simple-diff --source source --output "$RUNNER_TEMP/static-c-runtime.tar.gz" --source-revision "$SOURCE_REVISION"
+      - name: Refuse stale automatic publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SOURCE_REVISION: ${{ steps.source.outputs.source_revision }}
+        run: python3 ci/scripts/static-c-ci.py select --site simple-diff
+      - name: Validate or publish this one static site
+        env:
+          RUNTIME_REVISION: ${{ steps.package.outputs.package_revision }}
+          VALIDATE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_only }}
+          C_STATIC_DEPLOY_SSH_KEY: ${{ secrets.C_STATIC_DEPLOY_SSH_KEY }}
+          C_STATIC_DEPLOY_KNOWN_HOSTS: ${{ secrets.C_STATIC_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ "$VALIDATE_ONLY" = true ]; then
+            python3 ci/scripts/static-c-ci.py deploy --site simple-diff --revision "$RUNTIME_REVISION" --output "$RUNNER_TEMP/static-c-runtime.tar.gz" --check-only
+          else
+            python3 ci/scripts/static-c-ci.py deploy --site simple-diff --revision "$RUNTIME_REVISION" --output "$RUNNER_TEMP/static-c-runtime.tar.gz"
+          fi
+      - name: Remove temporary runtime archive
+        if: always()
+        run: rm -f "$RUNNER_TEMP/static-c-runtime.tar.gz"
